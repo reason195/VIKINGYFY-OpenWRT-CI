@@ -199,6 +199,44 @@ if [ -n "$HP_DIR" ]; then
 	fi
 fi
 
+#预置OpenClash Meta核心和配置（仅高通平台，核心为linux-arm64架构）
+if [[ "${WRT_TARGET,,}" == *"qualcommax"* ]]; then
+	OC_DIR="$(find "$PKG_PATH" -maxdepth 3 -type d -iname '*openclash*' -print -quit)"
+	if [ -n "$OC_DIR" ]; then
+		echo " "
+
+		CORE_PATH="$OC_DIR/root/usr/share/openclash/core"
+		CONF_PATH="$OC_DIR/root/etc/openclash/config"
+		mkdir -p "$CORE_PATH" "$CONF_PATH"
+
+		#下载Meta核心(linux-arm64)，压缩包内文件名为 clash
+		echo "Downloading Clash Meta..."
+		if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 300 \
+			"https://raw.githubusercontent.com/vernesong/OpenClash/refs/heads/core/master/meta/clash-linux-arm64.tar.gz" \
+			| tar xz -C "$CORE_PATH" clash; then
+			mv -f "$CORE_PATH/clash" "$CORE_PATH/clash_meta"
+			chmod +x "$CORE_PATH/clash_meta"
+			echo "clash_meta has been downloaded!"
+		else
+			echo "clash_meta download failed; continuing!"
+		fi
+
+		#下载配置文件
+		echo "Downloading MihomoPro.yaml..."
+		if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 60 \
+			"https://raw.githubusercontent.com/666OS/YYDS/refs/heads/main/mihomo/config/legacy/MihomoPro.yaml" \
+			-o "$CONF_PATH/MihomoPro.yaml"; then
+			#替换订阅地址
+			sed -i "s|https://[^\"]*优质订阅源[^\"]*|https://kaze1.aisaka-taiga.com/oosaka/34b430bdcde6e89e40f96d816baf450c|g" "$CONF_PATH/MihomoPro.yaml"
+			sed -i "s|优质订阅源地址|https://kaze1.aisaka-taiga.com/oosaka/34b430bdcde6e89e40f96d816baf450c|g" "$CONF_PATH/MihomoPro.yaml"
+			sed -i "s|备用订阅源地址|http://141.148.169.212:8080/sub/starter2026/mihomo.yaml|g" "$CONF_PATH/MihomoPro.yaml"
+			echo "MihomoPro.yaml has been updated!"
+		else
+			echo "MihomoPro.yaml download failed; continuing!"
+		fi
+	fi
+fi
+
 #修改argon主题字体和颜色
 if [ -d "$PKG_PATH/luci-theme-argon" ]; then
 	echo " "

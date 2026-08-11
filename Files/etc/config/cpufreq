@@ -1,0 +1,6 @@
+
+config settings 'cpufreq'
+	option governor0 'schedutil'
+
+config settings 'global'
+

@@ -1,0 +1,36 @@
+#!/bin/sh
+# /etc/rc.local - 开机自启幂等检查（双保险）
+# 即使 uci-defaults 因故未执行，也能在每次启动时确保关键配置就位。
+# 使用标记文件避免重复写入，仅在配置缺失时修复。
+
+exec >>/tmp/rc-local.log 2>&1
+
+FLAG="/etc/.rc-local-done"
+
+# 仅在首次（或重置后标记丢失）执行完整初始化
+if [ ! -f "$FLAG" ]; then
+  # 核心权限
+  if [ -f /etc/openclash/core/clash_meta ]; then
+    chmod +x /etc/openclash/core/clash_meta
+  fi
+
+  # OpenClash 配置指向
+  if [ -f /etc/openclash/config/MihomoPro.yaml ]; then
+    uci set openclash.config.config_path='/etc/openclash/config/MihomoPro.yaml' 2>/dev/null
+    uci set openclash.config.enable='1' 2>/dev/null
+    uci commit openclash 2>/dev/null
+  fi
+
+  # 标记已完成，避免每次启动重复执行
+  touch "$FLAG"
+fi
+
+# 每次启动都确保核心可执行（轻量检查）
+if [ -f /etc/openclash/core/clash_meta ]; then
+  chmod +x /etc/openclash/core/clash_meta
+fi
+
+# syncdial fix: 确保 syncdial 配置文件存在，避免 ppp.sh 同步拨号时 uci 报错
+[ -s /etc/config/syncdial ] || { printf 'config syncdial %s\n\toption enabled %s\n' 'config' '0' > /etc/config/syncdial; }
+
+exit 0

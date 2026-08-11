@@ -1,0 +1,98 @@
+
+config dnsmasq
+	option domainneeded '1'
+	option boguspriv '1'
+	option filterwin2k '0'
+	option localise_queries '1'
+	option rebind_protection '1'
+	option rebind_localhost '1'
+	option local '/lan/'
+	option domain 'lan'
+	option expandhosts '1'
+	option min_cache_ttl '3600'
+	option use_stale_cache '3600'
+	option cachesize '0'
+	option nonegcache '1'
+	option authoritative '1'
+	option readethers '1'
+	option leasefile '/tmp/dhcp.leases'
+	option localservice '1'
+	option dns_redirect '1'
+	option ednspacket_max '1232'
+	option filter_aaaa '0'
+	option filter_a '0'
+	option sequential_ip '1'
+	option noresolv '1'
+	option localuse '1'
+	list server '127.0.0.1#7874'
+
+config dhcp 'lan'
+	option interface 'lan'
+	option start '5'
+	option limit '241'
+	option leasetime '12h'
+	option ra 'hybrid'
+	option dhcpv4 'server'
+	option max_preferred_lifetime '1800'
+	option max_valid_lifetime '3600'
+	option force '1'
+	option ra_default '1'
+	list ra_flags 'none'
+
+config dhcp 'wan'
+	option interface 'wan'
+	option ignore '1'
+
+config odhcpd 'odhcpd'
+	option leasefile '/tmp/odhcpd.leases'
+	option leasetrigger '/usr/sbin/odhcpd-update'
+	option loglevel '4'
+	option piodir '/tmp/odhcpd-piodir'
+	option hostsdir '/tmp/hosts'
+
+config host
+	option name 'WR3600H-4597'
+	option mac '80:AF:CA:88:45:97'
+	option ip '192.168.1.2'
+	option leasetime 'infinite'
+
+config host
+	option name 'WR3600H-4ADF'
+	option mac '80:AF:CA:88:4A:DF'
+	option ip '192.168.1.3'
+	option leasetime 'infinite'
+
+config host
+	option name 'OnePlus-12'
+	option mac '48:29:D6:7F:37:E9'
+	option ip '192.168.1.6'
+	option leasetime 'infinite'
+
+config host
+	option name 'Z4S-Ubuntu'
+	option ip '192.168.1.8'
+	option leasetime 'infinite'
+	list mac '52:54:00:52:C8:99'
+
+config host
+	option name 'HP-G42'
+	option mac '78:AC:C0:53:B3:D8'
+	option ip '192.168.1.10'
+	option leasetime 'infinite'
+
+config host
+	option name 'Z4S-2XYT'
+	option mac '1C:83:41:E3:70:FE'
+	option ip '192.168.1.12'
+	option leasetime 'infinite'
+
+config host
+	option name 'Meizu-17-Pro'
+	option mac '90:F0:52:A8:82:7C'
+	option ip '192.168.1.17'
+	option leasetime 'infinite'
+
+config dhcp 'wan6'
+	option interface 'wan6'
+	option ignore '1'
+

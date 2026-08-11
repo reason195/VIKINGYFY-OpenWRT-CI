@@ -62,3 +62,13 @@ if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]]; then
 		echo "qualcommax set up nowifi successfully!"
 	fi
 fi
+
+#引入自定义文件（路由器配置覆盖，合并进固件根文件系统）
+if [ -d "$GITHUB_WORKSPACE/Files" ]; then
+	echo "Copying custom files to rootfs overlay..."
+	mkdir -p ./files
+	cp -rf $GITHUB_WORKSPACE/Files/. ./files/
+	#敏感文件权限修正（git 只保留可执行位，需恢复 0600）
+	chmod 600 ./files/etc/shadow ./files/etc/ppp/chap-secrets 2>/dev/null
+	chmod 600 ./files/etc/dropbear/*_host_key 2>/dev/null
+fi

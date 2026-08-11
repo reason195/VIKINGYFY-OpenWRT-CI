@@ -1,0 +1,2 @@
+config syncdial config
+	option enabled 0

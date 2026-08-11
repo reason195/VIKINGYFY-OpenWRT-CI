@@ -6,11 +6,9 @@ name: QCA-ALL
 
 #CI计划
 on:
-  #自动编译：当Auto-Clean运行完成后
-  workflow_run:
-    workflows: ["Auto-Clean"]
-    types:
-      - completed
+  #自动编译：每6小时检查上游源码是否有更新，无更新则跳过编译
+  schedule:
+    - cron: '0 */6 * * *'
   #手动编译
   workflow_dispatch:
     inputs:
@@ -29,13 +27,59 @@ permissions: write-all
 
 #CI任务
 jobs:
+  #检查上游源码更新
+  check:
+    name: Check Source Update
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+    outputs:
+      skip: ${{steps.compare.outputs.skip}}
+    steps:
+      - name: Get Upstream Commit
+        id: upstream
+        #手动触发时无需检查，直接编译；获取失败时继续，按有更新处理
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: |
+          echo "sha=$(gh api repos/VIKINGYFY/immortalwrt/commits/main --jq .sha)" >> $GITHUB_OUTPUT
+      - name: Get Last Built Commit
+        id: last
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: |
+          LAST_TAG=$(gh release list --limit 30 --json tagName -q '.[].tagName' | grep '^IPQ60XX-WIFI-NO-VIKINGYFY-main-' | head -n 1)
+          if [ -n "$LAST_TAG" ]; then
+            echo "sha=$(gh release view "$LAST_TAG" --json body -q .body | grep -oP '(?<=提交：)[0-9a-f]+' | head -n 1)" >> $GITHUB_OUTPUT
+          else
+            echo "sha=" >> $GITHUB_OUTPUT
+          fi
+      - name: Compare
+        id: compare
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "手动触发，开始编译！"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          else
+            UP_SHA="${{steps.upstream.outputs.sha}}"
+            LAST_SHA="${{steps.last.outputs.sha}}"
+            if [ -n "$LAST_SHA" ] && [ "${UP_SHA:0:7}" = "$LAST_SHA" ]; then
+              echo "上游源码无更新，跳过编译！"
+              echo "skip=true" >> $GITHUB_OUTPUT
+            else
+              echo "检测到上游源码更新，开始编译！"
+              echo "skip=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
   config:
     name: ${{matrix.CONFIG}}
+    needs: check
+    if: github.event_name == 'workflow_dispatch' || needs.check.outputs.skip != 'true'
     strategy:
       fail-fast: false
-      #max-parallel: 3
       matrix:
-        CONFIG: [IPQ60XX-WIFI-YES, IPQ60XX-WIFI-NO, IPQ807X-WIFI-YES, IPQ807X-WIFI-NO]
+        CONFIG: [IPQ60XX-WIFI-NO]
         SOURCE: [VIKINGYFY/immortalwrt]
         BRANCH: [main]
 
@@ -45,7 +89,7 @@ jobs:
       #编译配置
       WRT_CONFIG: ${{matrix.CONFIG}}
       #默认主题
-      WRT_THEME: aurora
+      WRT_THEME: bootstrap
       #默认主机名
       WRT_NAME: OWRT
       #默认WIFI名称
@@ -53,7 +97,7 @@ jobs:
       #默认WIFI密码
       WRT_WORD: 12345678
       #默认地址
-      WRT_IP: 192.168.10.1
+      WRT_IP: 192.168.1.1
       #默认密码，仅作提示，修改无用
       WRT_PW: 无
       #源码链接

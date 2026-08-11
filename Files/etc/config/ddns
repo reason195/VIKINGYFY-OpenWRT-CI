@@ -1,0 +1,21 @@
+
+config ddns 'global'
+	option ddns_dateformat '%F %R'
+	option ddns_loglines '250'
+	option upd_privateip '0'
+
+config service 'duckdns_ipv6'
+	option service_name 'duckdns.org'
+	option enabled '1'
+	option domain 'reason195.duckdns.org'
+	option username 'reason195'
+	option password '69b909ba-6a6c-4920-9243-0f2fdb400376'
+	option use_ipv6 '1'
+	option ip_source 'interface'
+	option ip_interface 'wan6'
+	option check_interval '10'
+	option check_unit 'minutes'
+	option force_interval '72'
+	option force_unit 'hours'
+	option lookup_host 'reason195.duckdns.org'
+
