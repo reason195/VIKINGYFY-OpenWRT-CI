@@ -1,0 +1,26 @@
+--- a/src/init/ssdk_init.c
++++ b/src/init/ssdk_init.c
+@@ -1498,15 +1498,6 @@
+ 	return 0;
+ }
+ 
+-static void ssdk_shutdown(struct platform_device *pdev)
+-{
+-	struct ssdk_driver_priv *priv = platform_get_drvdata(pdev);
+-
+-	if (!priv)
+-		return;
+-	ssdk_mac_sw_sync_work_stop(priv->dev_id);
+-}
+-
+ static const struct of_device_id ssdk_of_mtable[] = {
+ 	{.compatible = "qcom,ess-switch" },
+ 	{.compatible = "qcom,ess-switch-ipq60xx" },
+@@ -1525,7 +1516,6 @@
+                 .of_match_table = ssdk_of_mtable,
+         },
+         .probe    = ssdk_probe,
+-        .shutdown = ssdk_shutdown,
+ };
+ 
+ /*qca808x_start*/

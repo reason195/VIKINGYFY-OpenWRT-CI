@@ -1,3 +1,75 @@
+# 变更记录（2026-08-13 追加）：路由器重启起不来 + 构建阶段预置 GEO/白名单/最新面板
+
+用户反映「路由器重启后起不来，必须手动断电才能恢复网络」，同时要求验证并固化构建阶段的 GEO 数据库、大陆白名单下载与面板版本更新。本轮三项改动均已完成并本地验证。
+
+## 一、修复：重启后起不来（需断电恢复）——qca-ssdk 热重启回归
+
+- **现象**：路由器（京东云 RE-CS-07 / IPQ60XX-WIFI-NO）执行重启后无法正常启动，必须断电重新上电才能恢复网络；冷启动正常。
+- **根因（三重证据）**：
+  1. 上游 [VIKINGYFY/OpenWRT-CI#351](https://github.com/VIKINGYFY/OpenWRT-CI/issues/351)「05/10之后的60xx-wifi-no版本升级出现重启异常问题」，维护者自认「可能是新版ssdk的问题」；
+  2. 上游 2026-05-12 提交 `bb72cd01`（`{qca-nss-dp, qca-ssdk} update to win.nss.1.1.r35`）恰好把 ssdk 从 446db12b 升级到 d9a19649，与本固件实际安装的 `kmod-qca-ssdk 2025.11.14~d9a19649` 吻合；
+  3. 新旧 ssdk 源码对比：旧版 `ssdk_driver` **无** `.shutdown` 处理器（重启正常）；新版新增 `.shutdown = ssdk_shutdown`（重启时 `cancel_delayed_work_sync` 停掉 mac/sw 同步工作）。与 OpenWrt 官方已确认的 ath11k 热重启回归（[PR #24601](https://github.com/openwrt/openwrt/pull/24601)：新增 shutdown 处理器 → warm reset 后起不来，仅断电可恢复）同型。
+- **修复**（最小改动，恢复旧版已知正常行为）：新增补丁 `Scripts/patches/qca-ssdk-012-drop-ssdk-shutdown-handler.patch`，删除 `ssdk_shutdown()` 及 `.shutdown` 注册；`Scripts/Settings.sh` 在 qualcommax 构建时把补丁拷入 `package/qca-nss/qca-ssdk/patches/`（OpenWrt 自动应用，编号 012 接在现有 011 之后）。已在真实 ssdk 源码上验证补丁干净应用、无残留引用（避免未用 static 函数告警）。
+- **验证方式**：重新编译刷入后测试 `reboot`（或 LuCI 重启）即可确认；若仍复现，需串口日志定位（SBL1 卡点 / 内核 boot 卡点）。
+
+## 二、构建阶段预置 GEO 数据库 + 大陆白名单（不再依赖首启联网下载）
+
+此前 OpenClash 的 GEO 数据库与 chnroute 只在路由器首启由 `first_boot_download.sh` 下载（依赖首启网络，失败下次开机重试）。本轮改为 **`Scripts/Handles.sh` 构建时直接下载并烤进固件**，刷机首启即用：
+
+- **GEO 数据库**（下载源与 `openclash_geo.sh` 完全一致，jsdelivr 镜像优先、GitHub 直连兜底）：
+  - `GeoIP.dat`（Loyalsoldier/v2ray-rules-dat）→ `/etc/openclash/GeoIP.dat`
+  - `GeoSite.dat`（同仓库）→ `/etc/openclash/GeoSite.dat`
+  - `ASN.mmdb`（xishang0128/geoip）→ `/etc/openclash/ASN.mmdb`
+  - `Country.mmdb`（alecthw/mmdb_china_ip_list lite）→ `/etc/openclash/Country.mmdb`
+  - 校验：>10KB 且非 HTML 响应，失败终止构建（与核心/规则集/MihomoPro 同策略）。
+- **大陆白名单 chnroute**（源 ispip.clang.cn，与 `openclash_chnroute.sh` 相同）：
+  - 下载 `all_cn.txt` / `all_cn_ipv6.txt`，按脚本 fw4 分支逐字节生成 `china_ip_route.ipset` / `china_ip6_route.ipset`（ImmortalWRT 使用 firewall4，`93-buffy-openclash.sh` 已设 `china_ip_route=1`），烤进 `/etc/openclash/`。实测 v4 4337 条 / v6 1617 条。
+- **实测**：本机完整跑通构建段脚本——4 个 GEO 文件（17.4MB/10.4MB/12MB/212KB）、v4/v6 ipset、面板 zip 全部下载并落位正确。
+
+## 三、构建阶段预置最新面板（Zashboard / Metacubexd）
+
+openclash 包自带的面板是仓库固定版本（可能滞后）。本轮在构建时用与 `openclash_download_dashboard.sh` 相同的源**拉取最新版并覆盖**：
+
+- **Zashboard**：`Zephyruso/zashboard` gh-pages-cdn-fonts 分支 zip → `/usr/share/openclash/ui/zashboard/`
+- **Metacubexd**：`MetaCubeX/metacubexd` gh-pages 分支 zip → `/usr/share/openclash/ui/metacubexd/`
+- 校验：解压目录存在且 `index.html` 非空，失败终止构建。实测各 17 个文件、index.html 就位（Metacubexd v1.271.0）。
+- 说明：路由器的周更 crontab 与 `first_boot_download.sh` 保留不变（刷机后仍可自动追新）；本改动保证**刷机那一刻就是最新版**。
+
+# 变更记录（2026-08-13）：刷机验收 + 构建修复「OpenClash 核心/规则集烤不进固件」
+
+用户刷入最新 release（IPQ60XX-WIFI-NO-VIKINGYFY-main-26.08.12-05.42.01，上游 de810bc，内核 6.18.41）后验收，发现 OpenClash 首启失败，逐层定位出**两个构建侧缺陷**并已修复（路由器上也已同步修复并全链路验证）。
+
+## 一、缺陷 1：核心烤错路径（首启 "Core is not Detected"）
+
+- **现象**：刷机后 OpenClash 启动即报 `【Meta】Core is not Detected installed` → 联网下载核心 → 版本检查失败 → `enable` 被重置为 0 → 整个科学上网不可用。
+- **根因**：`Scripts/Handles.sh` 把核心下载到 `$OC_DIR/root/usr/share/openclash/core/clash_meta`，而 OpenClash master 的规范路径是 **`/etc/openclash/core/clash_meta`**（`openclash_core.sh` 的 `meta_core_path`；init 启动时 `[ ! -f /etc/openclash/clash ]` 才触发下载）。固件里 `/usr/share/openclash/core/clash_meta` 一直存在（10.7MB）但 OpenClash 从不检测该路径。
+- **修复**（`Scripts/Handles.sh`）：
+  - 下载路径改为 `$OC_DIR/root/etc/openclash/core`（随包 root/ 整体安装到 `/etc/openclash/core/`，Makefile `$(CP) root/*` 已确认）。
+  - 下载后校验：文件 >5MB 且 `file` 判定 `ARM aarch64` ELF（构建机为 x86_64，不能直接执行 arm64 二进制）——校验失败**终止构建**，不再静默产出无核心坏固件（原逻辑 `download failed; continuing!`）。
+- **实测**：修复后 `/etc/openclash/clash` 软链正常指向核心、9090 API 就绪、`OpenClash Start Successful!`，全程不再触发联网下载。
+
+## 二、缺陷 2：首启规则集空缓存死锁（刷机后全屋 DNS 挂）
+
+- **现象**：核心修好后 OpenClash 能启动，但所有 provider 拉取 `EOF`、系统 DNS 对所有域名返回 "No answer"。
+- **根因（首启死锁链）**：规则集（rule-set）无本地缓存 → 需联网下载 → 依赖 DNS 解析 github/jsdelivr 域名 → fake-ip-filter 域名走 nameserver(DoH) 解析 → DoH 连接按 `respect-rules` 路由 → 规则未加载 → 落 `MATCH` **空代理组** → EOF → 全链路断。备用订阅是纯 IP URL（`141.148.169.212`）所以能拉成功，反向印证了「只有域名解析是死的」。线上路由器此前正常是因为规则集已有本地缓存；刷机首启无缓存即死锁（此前的验收漏掉了首启场景）。
+- **决定性证据**：包里烤入的 `oc-cn-domain.mrs` 首启直接加载 114,954 条规则 → 证明「规则集烤进固件即可首启生效」。
+- **修复**（`Scripts/Handles.sh`）：构建时解析 `MihomoPro.yaml` 的 `rule-providers` 段（兼容 YYDS 内联锚点格式 `{<<: *BehaviorDN, url: ...}` 与展开多行格式），按 OpenClash 路径约定 `./rule_provider/<name>` 把**全部规则集烤进** `$OC_DIR/root/etc/openclash/rule_provider/`，任一失败终止构建。39 个 666OS 规则集 + 包自带 oc-cn-domain.mrs ≈ **1MB**，固件体积影响可忽略。
+- **实测**：40 个规则文件就位后重启 OpenClash——China 111,338 条 / Proxy 27,274 条等全部加载，kaze1/github 返回真实 IP、google 返回 fake-ip（198.18.0.18 分流正确），主订阅（[优] Hong Kong 节点）+ 备用订阅均拉取成功，`google/generate_204`=204、baidu=200。
+- **顺带**：`MihomoPro.yaml` 下载失败也改为终止构建（原来 `continuing!`，与核心/规则集一致）。
+
+## 三、缺陷 3：rc.local 备用 DNS 落错目录（从未生效）
+
+- **现象**：dnsmasq conf-dir 里始终没有 rc.local 写的 `60-fallback.conf`（备用上游 223.5.5.5 等从未生效）。
+- **根因**：`Files/etc/rc.local` 用 `uci show dhcp | sed -n "s/^dhcp\.\([^.]*\)\.type='dnsmasq'.*/\1/p"` 提取 cfgid——但本固件 uci 对匿名 dnsmasq section 打印为 `dhcp.@dnsmasq[0]=dnsmasq`，**不存在 `.type='dnsmasq'` 行**，提取恒为空 → 写到 `/tmp/dnsmasq..d` 错误目录。
+- **修复**（`Files/etc/rc.local`）：改用与 OpenClash init 相同的方法——`uci -q show 'dhcp.@dnsmasq[0]'` 首行 awk 取 cfgid，再读 `/tmp/etc/dnsmasq.conf.<cfgid>` 的 `conf-dir=`；带 `/tmp/etc/dnsmasq.conf.*` 兜底。已在路由器实测：cfgid=cfg01411c、DIR=/tmp/dnsmasq.cfg01411c.d；停用 OpenClash 期间 baidu/github 正常解析（备用上游接住），OpenClash 重启后 `60-fallback.conf` 保留不被清理。
+
+## 四、刷机验收结论（其余项全部通过）
+
+- 固件版本：与最新 release 完全一致（上游 de810bc / 内核 6.18.41）。
+- 核心路径、规则集、MihomoPro.yaml（22.8KB，含订阅注入）、fake-ip-filter 6 条、第二 DNS（reason195.duckdns.org → 真实 IP 13.251.105.66）、dnsmasq cachesize=0、备用上游、DDNS、防火墙 v6 放行、证书自愈、cron 定时任务均按设计就位。
+- 首次开机引导：GeoIP/GeoSite/chnroute 更新成功；Zashboard/Metacubexd 面板更新警告（当时 DNS 尚在恢复中），下次开机自动重试（设计行为）。
+- 路由器已同步修复：`/etc/openclash/core/clash_meta` 就位、40 个规则集就位、修复版 `/etc/rc.local` 上线（与仓库 HEAD 比对字节一致后覆盖），重启后可自恢复。
+
 # 变更记录（2026-08-12）
 
 本轮工作分两部分：**① 在路由器（京东云 RE-CS-07 / ImmortalWRT SNAPSHOT）上在线完成了一系列优化与修复**；**② 把全部改动固化进本仓库的 `Files/` 与 `Config/`，使重新编译的固件开箱即用（即插即用）**。

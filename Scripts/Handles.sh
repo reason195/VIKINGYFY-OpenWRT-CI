@@ -205,7 +205,10 @@ if [[ "${WRT_TARGET,,}" == *"qualcommax"* ]]; then
 	if [ -n "$OC_DIR" ]; then
 		echo " "
 
-		CORE_PATH="$OC_DIR/root/usr/share/openclash/core"
+		# 核心必须烤到 /etc/openclash/core/clash_meta（OpenClash 规范路径，openclash_core.sh 的 meta_core_path）。
+		# 注意：不能放 /usr/share/openclash/core —— 启动时 init 只检测 /etc/openclash/core，
+		# 核心缺失会触发联网下载，失败后 enable 被重置为 0（曾导致刷机后首次开机 OpenClash 无法启动）。
+		CORE_PATH="$OC_DIR/root/etc/openclash/core"
 		CONF_PATH="$OC_DIR/root/etc/openclash/config"
 		mkdir -p "$CORE_PATH" "$CONF_PATH"
 
@@ -216,9 +219,18 @@ if [[ "${WRT_TARGET,,}" == *"qualcommax"* ]]; then
 			| tar xz -C "$CORE_PATH" clash; then
 			mv -f "$CORE_PATH/clash" "$CORE_PATH/clash_meta"
 			chmod +x "$CORE_PATH/clash_meta"
-			echo "clash_meta has been downloaded!"
+			# 校验（构建机为 x86_64，不能执行 arm64 二进制，用 file 判断 ELF 架构 + 大小下限防损坏）
+			CORE_SIZE=$(stat -c%s "$CORE_PATH/clash_meta" 2>/dev/null || echo 0)
+			if [ "$CORE_SIZE" -gt 5000000 ] && file "$CORE_PATH/clash_meta" | grep -q "ARM aarch64"; then
+				echo "clash_meta has been downloaded! ($CORE_SIZE bytes, aarch64 ELF)"
+			else
+				echo "ERROR: clash_meta 下载成功但校验失败（损坏或架构不符），无法产出可用固件，终止构建！"
+				rm -f "$CORE_PATH/clash_meta"
+				exit 1
+			fi
 		else
-			echo "clash_meta download failed; continuing!"
+			echo "ERROR: clash_meta 下载失败，无法产出可用固件，终止构建！"
+			exit 1
 		fi
 
 		#下载配置文件
@@ -244,8 +256,169 @@ print("sub URLs injected")
 PYEOF
 			echo "MihomoPro.yaml has been updated!"
 		else
-			echo "MihomoPro.yaml download failed; continuing!"
+			echo "ERROR: MihomoPro.yaml 下载失败，无法产出可用固件，终止构建！"
+			exit 1
 		fi
+
+		#预置规则集（rule-providers）：刷机首启死锁修复
+		#首启时规则集无本地缓存 → 需联网下载 → 依赖 DNS（fake-ip-filter 域名经 nameserver DoH 解析）→
+		#DoH 连接按 respect-rules 路由 → 规则未加载 → 落 MATCH 空代理组 → EOF → 全链路断（曾导致刷机后全屋 DNS 挂）。
+		#把模板的全部规则集按 yaml 的 path 字段烤进固件，启动即从本地加载，规则立即生效（已验证：烤入的
+		#oc-cn-domain.mrs 首启直接加载 114954 条规则）。
+		RULE_DIR="$OC_DIR/root/etc/openclash/rule_provider"
+		mkdir -p "$RULE_DIR"
+		while read -r RULE_PATH RULE_URL; do
+			[ -n "$RULE_URL" ] || continue
+			RULE_TARGET="$RULE_DIR/${RULE_PATH#./rule_provider/}"
+			echo "Downloading rule-set: $RULE_PATH"
+			if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 \
+				-o "$RULE_TARGET" "$RULE_URL" && [ -s "$RULE_TARGET" ]; then
+				echo "rule-set $RULE_PATH has been downloaded! ($(stat -c%s "$RULE_TARGET") bytes)"
+			else
+				echo "ERROR: rule-set $RULE_PATH 下载失败，无法产出可用固件，终止构建！"
+				rm -f "$RULE_TARGET"
+				exit 1
+			fi
+		done < <(python3 - "$CONF_PATH/MihomoPro.yaml" <<'PYEOF'
+import re, sys
+p = sys.argv[1]
+in_rules = False
+cur = None
+for line in open(p, encoding="utf-8"):
+    line = line.rstrip("\r\n")
+    if line.startswith("rule-providers:"):
+        in_rules = True
+        continue
+    if in_rules:
+        if line and not line[0].isspace():
+            break
+        # 内联格式：NAME: {<<: *BehaviorDN, url: https://...}（YYDS 原始模板，无 path，OpenClash 按 ./rule_provider/<NAME> 约定生成）
+        m = re.match(r"^  (\S+):\s*(\{.*\})\s*$", line)
+        if m:
+            um = re.search(r"url:\s*(\S+)", m.group(2))
+            if um:
+                print(m.group(1) + "\t" + um.group(1).rstrip(" ,}\r"))
+            cur = None
+            continue
+        # 多行格式（展开/处理后）：NAME: 换行 url:/path:
+        m = re.match(r"^  ([^:]+):$", line)
+        if m:
+            cur = {}
+            continue
+        if cur is not None:
+            m = re.match(r"^    (url|path):\s*\"?([^\"]+?)\"?\s*$", line)
+            if m:
+                cur[m.group(1)] = m.group(2).rstrip()
+                if "url" in cur and "path" in cur:
+                    print(cur["path"] + "\t" + cur["url"])
+                    cur = None
+PYEOF
+)
+		echo "All rule-sets have been preloaded! ($(ls "$RULE_DIR" | wc -l) files)"
+
+		#预置 GEO 数据库（GeoIP/GeoSite/ASN/Country）：首启即用，不依赖首启联网下载。
+		#下载源与 openclash_geo.sh 一致（Loyalsoldier/v2ray-rules-dat、xishang0128/geoip、alecthw/mmdb_china_ip_list），
+		#文件名/路径与 OpenClash 运行期一致（/etc/openclash/GeoIP.dat 等），校验：>10KB 且非 HTML 响应。
+		GEO_DIR="$OC_DIR/root/etc/openclash"
+		mkdir -p "$GEO_DIR"
+		download_geo() {
+			local NAME="$1" URL="$2" TARGET="$3" URL_FALLBACK="$4"
+			if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 300 -o "$TARGET" "$URL" && \
+				[ -s "$TARGET" ] && [ "$(stat -c%s "$TARGET")" -gt 10240 ] && \
+				! head -c 512 "$TARGET" | grep -qiE '<!doctype|<html|<head|<body'; then
+				echo "geo $NAME has been downloaded! ($(stat -c%s "$TARGET") bytes)"
+				return 0
+			fi
+			if [ -n "$URL_FALLBACK" ]; then
+				echo "retry geo $NAME via fallback URL..."
+				if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 300 -o "$TARGET" "$URL_FALLBACK" && \
+					[ -s "$TARGET" ] && [ "$(stat -c%s "$TARGET")" -gt 10240 ] && \
+					! head -c 512 "$TARGET" | grep -qiE '<!doctype|<html|<head|<body'; then
+					echo "geo $NAME has been downloaded via fallback! ($(stat -c%s "$TARGET") bytes)"
+					return 0
+				fi
+			fi
+			echo "ERROR: geo $NAME 下载失败，无法产出可用固件，终止构建！"
+			rm -f "$TARGET"
+			exit 1
+		}
+		download_geo "GeoIP.dat" \
+			"https://testingcf.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat" \
+			"$GEO_DIR/GeoIP.dat" \
+			"https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+		download_geo "GeoSite.dat" \
+			"https://testingcf.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat" \
+			"$GEO_DIR/GeoSite.dat" \
+			"https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+		download_geo "ASN.mmdb" \
+			"https://testingcf.jsdelivr.net/gh/xishang0128/geoip@release/GeoLite2-ASN.mmdb" \
+			"$GEO_DIR/ASN.mmdb" \
+			"https://github.com/xishang0128/geoip/releases/latest/download/GeoLite2-ASN.mmdb"
+		download_geo "Country.mmdb" \
+			"https://testingcf.jsdelivr.net/gh/alecthw/mmdb_china_ip_list@release/lite/Country.mmdb" \
+			"$GEO_DIR/Country.mmdb" \
+			"https://raw.githubusercontent.com/alecthw/mmdb_china_ip_list/release/lite/Country.mmdb"
+
+		#预置大陆白名单 chnroute（v4/v6 ipset）：与 openclash_chnroute.sh 的 fw4 分支生成格式逐字节一致
+		#（ImmortalWRT 使用 firewall4，见 93-buffy-openclash.sh china_ip_route=1），首启即加载中国 IP 直连。
+		echo "Downloading chnroute cidr list..."
+		CHNR_TMP="$(mktemp -d)"
+		if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 \
+			-o "$CHNR_TMP/all_cn.txt" "https://ispip.clang.cn/all_cn.txt" && [ -s "$CHNR_TMP/all_cn.txt" ] && \
+		   curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 \
+			-o "$CHNR_TMP/all_cn_ipv6.txt" "https://ispip.clang.cn/all_cn_ipv6.txt" && [ -s "$CHNR_TMP/all_cn_ipv6.txt" ]; then
+			{
+				echo "define china_ip_route = {"
+				awk '!/^$/&&!/^#/{printf("    %s,\n",$0)}' "$CHNR_TMP/all_cn.txt"
+				echo "}"
+				echo "add set inet fw4 china_ip_route { type ipv4_addr; flags interval; auto-merge; }"
+				echo 'add element inet fw4 china_ip_route $china_ip_route'
+			} > "$GEO_DIR/china_ip_route.ipset"
+			{
+				echo "define china_ip6_route = {"
+				awk '!/^$/&&!/^#/{printf("    %s,\n",$0)}' "$CHNR_TMP/all_cn_ipv6.txt"
+				echo "}"
+				echo "add set inet fw4 china_ip6_route { type ipv6_addr; flags interval; auto-merge; }"
+				echo 'add element inet fw4 china_ip6_route $china_ip6_route'
+			} > "$GEO_DIR/china_ip6_route.ipset"
+			echo "chnroute has been preloaded! ($(stat -c%s "$GEO_DIR/china_ip_route.ipset") bytes v4, $(stat -c%s "$GEO_DIR/china_ip6_route.ipset") bytes v6)"
+			rm -rf "$CHNR_TMP"
+		else
+			echo "ERROR: chnroute 下载失败，无法产出可用固件，终止构建！"
+			rm -rf "$CHNR_TMP"
+			exit 1
+		fi
+
+		#预置最新面板版本（Zashboard / Metacubexd）：覆盖 openclash 包自带的旧版，刷机即用最新版。
+		#下载源与 openclash_download_dashboard.sh 一致（gh-pages 分支 zip，含 index.html 校验）。
+		UI_DIR="$OC_DIR/root/usr/share/openclash/ui"
+		mkdir -p "$UI_DIR"
+		download_dashboard() {
+			local NAME="$1" URL="$2" INCLUDE_DIR="$3" TARGET_DIR="$4"
+			local TMP
+			TMP="$(mktemp -d)"
+			echo "Downloading dashboard: $NAME"
+			if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 300 \
+				-o "$TMP/dash.zip" "$URL" && unzip -q "$TMP/dash.zip" -d "$TMP/extract" && \
+				[ -d "$TMP/extract/$INCLUDE_DIR" ] && [ -f "$TMP/extract/$INCLUDE_DIR/index.html" ]; then
+				rm -rf "$TARGET_DIR"
+				cp -rf "$TMP/extract/$INCLUDE_DIR" "$TARGET_DIR"
+				rm -rf "$TMP"
+				echo "dashboard $NAME has been updated! ($(ls "$TARGET_DIR" | wc -l) files)"
+				return 0
+			fi
+			echo "ERROR: dashboard $NAME 下载失败，无法产出可用固件，终止构建！"
+			rm -rf "$TMP"
+			exit 1
+		}
+		download_dashboard "Zashboard" \
+			"https://codeload.github.com/Zephyruso/zashboard/zip/refs/heads/gh-pages-cdn-fonts" \
+			"zashboard-gh-pages-cdn-fonts" \
+			"$UI_DIR/zashboard"
+		download_dashboard "Metacubexd" \
+			"https://codeload.github.com/MetaCubeX/metacubexd/zip/refs/heads/gh-pages" \
+			"metacubexd-gh-pages" \
+			"$UI_DIR/metacubexd"
 	fi
 fi
 

@@ -61,6 +61,18 @@ if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]]; then
 		find $DTS_PATH -type f ! -iname '*nowifi*' -exec sed -i 's/ipq\(6018\|8074\).dtsi/ipq\1-nowifi.dtsi/g' {} +
 		echo "qualcommax set up nowifi successfully!"
 	fi
+
+	# qca-ssdk 热重启修复：上游 05-12 把 ssdk 升到 win.nss.1.1.r35（d9a19649），该版本新增了
+	# .shutdown 处理器，重启时停止 mac/sw 同步工作，导致 warm reset 后路由器起不来（必须断电恢复，
+	# 见 VIKINGYFY/OpenWRT-CI#351「05/10之后的60xx-wifi-no版本升级出现重启异常问题」）。
+	# 旧版 ssdk 无 shutdown 处理器、重启正常——本补丁移除 shutdown 处理器恢复旧版行为（最小改动）。
+	SSDK_PATCH_DIR="./package/qca-nss/qca-ssdk/patches"
+	if [ -d "$SSDK_PATCH_DIR" ] && [ -f "$GITHUB_WORKSPACE/Scripts/patches/qca-ssdk-012-drop-ssdk-shutdown-handler.patch" ]; then
+		cp -f "$GITHUB_WORKSPACE/Scripts/patches/qca-ssdk-012-drop-ssdk-shutdown-handler.patch" "$SSDK_PATCH_DIR/"
+		echo "qca-ssdk warm-reboot fix patch installed!"
+	else
+		echo "WARN: qca-ssdk 目录或补丁不存在，跳过热重启修复（上游结构可能已变更）"
+	fi
 fi
 
 #引入自定义文件（路由器配置覆盖，合并进固件根文件系统）
