@@ -74,6 +74,9 @@ jobs:
     steps:
       - name: Checkout Projects
         uses: actions/checkout@main
+        with:
+          # 完整克隆本仓库历史，release 提交变更统计（git log PREV_TAG..HEAD）依赖完整历史
+          fetch-depth: 0
 
       - name: Initialization Environment
         env:
@@ -245,7 +248,7 @@ jobs:
           # 列出本仓库（CI 配置）自上一个同配置 release 以来的提交，使描述随每次发布更新
           git fetch --tags --force origin >/dev/null 2>&1 || true
           PREV_TAG=$(gh release list --limit 30 --json tagName -q '.[].tagName' 2>/dev/null \
-            | grep "^$WRT_CONFIG-$WRT_INFO-$WRT_BRANCH-" | head -2 | tail -1)
+            | grep "^$WRT_CONFIG-$WRT_INFO-$WRT_BRANCH-" | head -1)
           if [ -n "$PREV_TAG" ]; then
             CHANGES=$(git log --oneline "$PREV_TAG"..HEAD 2>/dev/null | head -30)
             if [ -n "$CHANGES" ]; then
