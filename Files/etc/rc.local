@@ -33,4 +33,15 @@ fi
 # syncdial fix: 确保 syncdial 配置文件存在，避免 ppp.sh 同步拨号时 uci 报错
 [ -s /etc/config/syncdial ] || { printf 'config syncdial %s\n\toption enabled %s\n' 'config' '0' > /etc/config/syncdial; }
 
+# dnsmasq 备用 DNS conf（/tmp 重启即清，每次启动重建；OpenClash 看门狗不管理此目录）
+CFG=$(uci -q show dhcp | sed -n "s/^dhcp\.\([^.]*\)\.type='dnsmasq'.*/\1/p" | head -1)
+DIR="/tmp/dnsmasq.${CFG}.d"
+mkdir -p "$DIR"
+printf 'server=223.5.5.5\nserver=119.29.29.29\nserver=2400:3200::1\n' > "$DIR/60-fallback.conf"
+chmod 644 "$DIR/60-fallback.conf"
+/etc/init.d/dnsmasq restart >/dev/null 2>&1
+
+# Let's Encrypt 证书后台自愈（首次开机即尝试签发，缺失时由每日 cron 重试）
+( sleep 90; /usr/share/buffy/cert_check.sh >/dev/null 2>&1 ) &
+
 exit 0

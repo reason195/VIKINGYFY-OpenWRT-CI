@@ -3,3 +3,8 @@
 0 1 * * 1 /usr/share/openclash/openclash_geo.sh geoip #openclash-cron-task
 0 3 * * 1 /usr/share/openclash/openclash_geo.sh geoasn #openclash-cron-task
 0 4 * * 1 /usr/share/openclash/openclash_chnroute.sh #openclash-cron-task
+
+#Let's Encrypt 每日续期与失败告警（00:00 续期 / 00:05 重载 uhttpd / 00:20 检查告警）
+0 0 * * * /etc/init.d/acme renew
+5 0 * * * /etc/init.d/uhttpd restart
+20 0 * * * /usr/share/buffy/cert_check.sh
