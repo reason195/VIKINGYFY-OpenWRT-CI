@@ -50,12 +50,23 @@
 用户要求按 [Custom_OpenClash_Rules 设置方案](https://github.com/Aethersailor/Custom_OpenClash_Rules/wiki/OpenClash-%E8%AE%BE%E7%BD%AE%E6%96%B9%E6%A1%88) 调整，逐项落地并验证：
 - **cachesize 归 0**：`disable_masq_cache` 0→**1**、`dnsmasq_cachesize`→**0**、`cachesize_dns`→**1**、dhcp `cachesize`→**0**。重启后运行期 `cache disabled`，方案要求的「禁止 Dnsmasq 缓存 DNS」生效（此前的 2048 缓存工作按用户决定撤销）。
 - **第二 DNS（DDNS 域名返回真实 IP）**：采用 LuCI「DNS 设置」页的**第二DNS服务器**开关（`enable_custom_domain_dns_server=1` + `custom_domain_dns_server=223.5.5.5`，dnsmasq 侧，`server=/reason195.duckdns.org/223.5.5.5`）。验证：该域名返回真实 IP（13.251.105.66 / 2409:8a5c:...），不再被 fake-ip 劫持。
-- **修正（2026-08-12）**：此前误用 `custom_name_policy`（nameserver-policy，clash DNS 引擎层）实现近似效果——那不是方案内容，且经实测在 0.47.156 下**未真正生效**（运行 yaml 无 nameserver-policy 段、无 reason195 条目）。已改回方案对应的 dnsmasq 侧开关，并关闭 `custom_name_policy`/`custom_fakeip_filter`（包默认即为 0）。
+- **修正（2026-08-12）**：此前误用 `custom_name_policy`（nameserver-policy，clash DNS 引擎层）实现近似效果——那不是方案内容，且经实测在 0.47.156 下**未真正生效**（运行 yaml 无 nameserver-policy 段、无 reason195 条目）。已改回方案对应的 dnsmasq 侧开关，并关闭失效的 `custom_name_policy`；`custom_fakeip_filter` 则因后续发现的真实需求重新启用（见下节 9）。
 - **GeoIP Dat**：`enable_geoip_dat` 0→**1**。
 - **清理 Fallback 组**：禁用 `dns.google/dns-query`、`dns.cloudflare.com/dns-query`（方案要求无 fallback，非直连域名交远端解析）。
 - **自动更新**：GEO/GeoIP/白名单数据库自动更新本就开启（每周，满足方案要求）；**配置本体的自动更新不适用**——当前是手动 YAML 路径（无订阅条目），方案三选一中的自动更新需改为订阅转换/覆写模块，为避免重蹈断网覆辙未切换。
 - 全程带备份（`/root/bak-buffy/`）分步验证，未出现断网；重启后直连域名正常解析、代理域名仍 fake-ip、代理出口仍马来西亚。
 - 说明：clash DNS 的 `ipv6: false`（方案在出站不支持 IPv6 时的标准做法）会过滤 AAAA——局域网内用域名访问路由器时只拿到 A 记录（DuckDNS 服务器地址），请直接使用 `192.168.1.1`；外网访问不受影响（手机用自己的 DNS 解析 AAAA）。
+
+### 9. 刷机后验收与重大修复：provider 拉取全部 EOF（2026-08-12 追加）
+
+刷机后的固件 OpenClash 无法拉取任何 provider（主订阅、规则源全部 `EOF`），全网断。逐层排查最终定位：
+
+- **表象**：`[Provider] 优质服务商 pull error: Get "https://kaze1...": EOF`（主订阅+全部域名类规则源失败，仅 IP 直连的备用订阅成功）。
+- **排除项**：核心二进制（裸跑对照试验）、nft 防火墙规则（清空规则后仍失败）、YAML 锚点（666OS 模板的 `&2/*2` 锚点结构、展开后仍失败）、TUN、IPv6 路由（补默认路由后 ping6 通）——均非根因。
+- **根因（决定性证据）**：clash 的 SOCKS 出站完全正常（kaze1 经规则 DIRECT 得 403 可达），但 **clash DNS 对 kaze1 返回 fake-ip（198.18.0.128）**。provider 定义 `proxy: DIRECT` 拉取时域名经 respect-rules + fake-ip DNS 解析成 198.18.x.x，DIRECT 直连 fake-ip 必然 EOF；而普通连接走了规则（DIRECT 规则 → 真实 IP）所以正常。
+- **修复（验证有效）**：启用 OpenClash 的 `custom_fakeip_filter`，把「路由器自身需直连」的域名加入 fake-ip-filter（强制解析真实 IP）：`+.aisaka-taiga.com`（主订阅）、`+.duckdns.org`（DDNS/acme）、`+.github.com`/`+.githubusercontent.com`/`+.githubassets.com`（规则源/面板下载）、`+.jsdelivr.net`（核心/Geo 下载）。
+- **验证结果**：主订阅 19818B、备用 1836B 拉取成功，0 pull error；kaze1/duckdns/github 解析真实 IP、google 仍 fake-ip（分流正确）；baidu 200、google 200（经代理）、DuckDNS API 200（DDNS/acme 通路恢复）。
+- 锚点排除：666OS 模板的 YAML 锚点/合并键曾高度嫌疑（展开后仍失败），实测**锚点非根因**——带锚点与展开版在修复后均验证可用。live 源配置保留固件烘焙的原始（带锚点）版本，与下次固件一致。
 
 ### 7. 其他排查结论
 - **SSH "密码错误" 根因**：非路由器故障，是 `sshpass` 在 Git Bash 下的 PTY 兼容问题。改用 OpenSSH `SSH_ASKPASS` 机制后 root/root 正常登录。

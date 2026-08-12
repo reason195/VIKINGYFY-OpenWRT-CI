@@ -1,0 +1,10 @@
+# OpenClash custom_fakeip_filter 域名列表
+# 这些域名在 fake-ip 模式下必须返回真实 IP（不落入 198.18.x.x），
+# 否则 clash 自身（provider 拉取、规则源、DDNS、acme、核心下载）DIRECT 直连 fake-ip 会失败。
+# 格式：+.域名 = 该域名及其所有子域名
++.aisaka-taiga.com
++.duckdns.org
++.github.com
++.githubusercontent.com
++.githubassets.com
++.jsdelivr.net
