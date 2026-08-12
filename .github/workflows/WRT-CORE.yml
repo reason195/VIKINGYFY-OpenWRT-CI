@@ -268,6 +268,18 @@ jobs:
             echo "WRT_UPSTREAM_NOTE=" >> $GITHUB_ENV
           fi
 
+          # 无 WIFI 配置（wifi-no）时，release 描述不显示 WIFI 名称/密码
+          if [ "$WRT_WIFI" = "wifi-yes" ]; then
+            {
+              echo "WRT_WIFI_INFO<<EOF"
+              echo "WIFI名称：$WRT_SSID"
+              echo "WIFI密码：$WRT_WORD"
+              echo "EOF"
+            } >> $GITHUB_ENV
+          else
+            echo "WRT_WIFI_INFO=" >> $GITHUB_ENV
+          fi
+
       - name: Release Firmware
         uses: softprops/action-gh-release@master
         with:
@@ -290,8 +302,7 @@ jobs:
             登录地址：${{env.WRT_IP}}
             登录密码：${{env.WRT_PW}}
 
-            WIFI名称：${{env.WRT_SSID}}
-            WIFI密码：${{env.WRT_WORD}}
+            ${{env.WRT_WIFI_INFO}}
 
             内核版本：${{env.WRT_KVER}}
             插件列表：${{env.WRT_LIST}}
