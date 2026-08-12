@@ -182,12 +182,12 @@ jobs:
           fi
 
           MSG="${EMOJI} ${TITLE}（定时任务）
-配置：IPQ60XX-WIFI-NO
-结果：${RESULT}
-上游：VIKINGYFY/immortalwrt
-${RELEASE_NOTE}
-${DURATION_NOTE}
-运行：${RUN_URL}"
+          配置：IPQ60XX-WIFI-NO
+          结果：${RESULT}
+          上游：VIKINGYFY/immortalwrt
+          ${RELEASE_NOTE}
+          ${DURATION_NOTE}
+          运行：${RUN_URL}"
           curl -s --fail --max-time 30 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
             --data-urlencode "text=${MSG}"
