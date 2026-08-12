@@ -47,13 +47,13 @@ jobs:
         id: upstream
         #定时/仅检查时获取上游最新提交；手动触发（非仅检查）无需检查直接编译
         #获取失败时继续，按有更新处理
-        if: github.event_name == 'schedule' || inputs.CHECK_ONLY == 'true'
+        if: github.event_name == 'schedule' || github.event.inputs.CHECK_ONLY == 'true'
         continue-on-error: true
         run: |
           echo "sha=$(gh api repos/VIKINGYFY/immortalwrt/commits/main --jq .sha)" >> $GITHUB_OUTPUT
       - name: Get Last Built Commit
         id: last
-        if: github.event_name == 'schedule' || inputs.CHECK_ONLY == 'true'
+        if: github.event_name == 'schedule' || github.event.inputs.CHECK_ONLY == 'true'
         continue-on-error: true
         run: |
           LAST_TAG=$(gh release list --limit 30 --json tagName -q '.[].tagName' | grep '^IPQ60XX-WIFI-NO-VIKINGYFY-main-' | head -n 1)
@@ -65,7 +65,8 @@ jobs:
       - name: Compare
         id: compare
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{inputs.CHECK_ONLY}}" != "true" ]]; then
+          echo "CHECK_ONLY input = ${{github.event.inputs.CHECK_ONLY}}"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{github.event.inputs.CHECK_ONLY}}" != "true" ]]; then
             echo "手动触发，开始编译！"
             echo "skip=false" >> $GITHUB_OUTPUT
           else
@@ -83,7 +84,7 @@ jobs:
   config:
     name: ${{matrix.CONFIG}}
     needs: check
-    if: (github.event_name == 'workflow_dispatch' && inputs.CHECK_ONLY != 'true') || (github.event_name != 'workflow_dispatch' && needs.check.outputs.skip != 'true')
+    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.CHECK_ONLY != 'true') || (github.event_name != 'workflow_dispatch' && needs.check.outputs.skip != 'true')
     strategy:
       fail-fast: false
       matrix:
