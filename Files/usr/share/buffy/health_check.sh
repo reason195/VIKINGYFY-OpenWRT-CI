@@ -19,9 +19,9 @@ REPORT=""
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
-ok()  { PASS=$((PASS + 1)); REPORT="${REPORT}[OK]   $1\n"; log "[OK]   $1"; }
-bad() { FAIL=$((FAIL + 1)); REPORT="${REPORT}[FAIL] $1\n"; log "[FAIL] $1"; }
-warn(){ REPORT="${REPORT}[WARN] $1\n"; log "[WARN] $1"; }
+ok()  { PASS=$((PASS + 1)); REPORT="${REPORT}[OK]   $1\n"; log "[OK]   $1"; echo "[OK]   $1"; }
+bad() { FAIL=$((FAIL + 1)); REPORT="${REPORT}[FAIL] $1\n"; log "[FAIL] $1"; echo "[FAIL] $1"; }
+warn(){ REPORT="${REPORT}[WARN] $1\n"; log "[WARN] $1"; echo "[WARN] $1"; }
 
 notify() { curl -fsS -m 10 -H "Title: $1" -H "Priority: high" -d "$2" "$NTFY" >/dev/null 2>&1; }
 
@@ -70,10 +70,19 @@ else
 	warn "未获取公网 IPv6 地址（wan6 可能未拨上）"
 fi
 
-if ping -6 -c 2 -W 3 2400:3200::1 >/dev/null 2>&1; then
-	ok "公网 IPv6 可达 (2400:3200::1)"
+# IPv6 可达性必须显式指定全局源地址：本机 IPv6 默认路由全是 "default from <prefix>" 源路由
+# （无裸 default），不指定源会被判 Network unreachable，产生假阳性。先取 WAN 全局地址做源。
+WAN6=""
+for _dev in pppoe-wan wan6 wan; do
+	WAN6=$(ip -6 addr show dev "$_dev" scope global 2>/dev/null | awk '/inet6/{print $2; exit}' | cut -d/ -f1)
+	[ -n "$WAN6" ] && break
+done
+if [ -n "$WAN6" ] && ping -6 -c 2 -W 3 -I "$WAN6" 2400:3200::1 >/dev/null 2>&1; then
+	ok "公网 IPv6 可达 (2400:3200::1, 源 ${WAN6%%:*})"
+elif [ -n "$WAN6" ] && ping -6 -c 2 -W 3 -I "$WAN6" 2001:4860:4860::8888 >/dev/null 2>&1; then
+	ok "公网 IPv6 可达 (2001:4860:4860::8888, 源 ${WAN6%%:*})"
 else
-	warn "公网 IPv6 不可达"
+	warn "公网 IPv6 不可达（源:${WAN6:-无全局地址}）"
 fi
 
 if resolve www.baidu.com 223.5.5.5; then
