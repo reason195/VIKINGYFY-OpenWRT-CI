@@ -6,12 +6,10 @@ name: QCA-ALL
 
 #CI计划
 on:
-  #上游源码更新触发：每 30 分钟检查上游源码（VIKINGYFY/immortalwrt）是否有新提交，
-  #无更新则跳过编译（等效于上游源码更新即触发，上游无更新时零构建）；
-  #GitHub Actions 无法直接订阅其他仓库的 push 事件，故用高频轮询 + 无更新跳过实现。
+  #自动编译：每6小时检查上游源码是否有更新，无更新则跳过编译
   schedule:
-    - cron: '*/30 * * * *'
-  #手动编译（始终执行，不受上游检查限制）
+    - cron: '0 */6 * * *'
+  #手动编译
   workflow_dispatch:
     inputs:
       PACKAGE:
