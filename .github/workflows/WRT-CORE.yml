@@ -100,7 +100,12 @@ jobs:
           echo "WRT_MARK=${GITHUB_REPOSITORY%%/*}" >> $GITHUB_ENV
           echo "WRT_INFO=${WRT_SOURCE%%/*}" >> $GITHUB_ENV
           echo "WRT_TARGET=$(grep -m 1 -oP '^CONFIG_TARGET_\K[\w]+(?=\=y)' ./Config/$WRT_CONFIG.txt)" >> $GITHUB_ENV
-          echo "WRT_WIFI=wifi-yes" >> $GITHUB_ENV
+          # 根据配置名推导 WIFI 类型：WIFI-NO 配置（如 IPQ60XX-WIFI-NO）release 不显示 WIFI 名称/密码
+          if [[ "${WRT_CONFIG,,}" == *"wifi-no"* ]]; then
+            echo "WRT_WIFI=wifi-no" >> $GITHUB_ENV
+          else
+            echo "WRT_WIFI=wifi-yes" >> $GITHUB_ENV
+          fi
           echo "WRT_KVER=none" >> $GITHUB_ENV
           echo "WRT_LIST=none" >> $GITHUB_ENV
 
