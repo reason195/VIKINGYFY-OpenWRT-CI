@@ -68,6 +68,13 @@
 - **验证结果**：主订阅 19818B、备用 1836B 拉取成功，0 pull error；kaze1/duckdns/github 解析真实 IP、google 仍 fake-ip（分流正确）；baidu 200、google 200（经代理）、DuckDNS API 200（DDNS/acme 通路恢复）。
 - 锚点排除：666OS 模板的 YAML 锚点/合并键曾高度嫌疑（展开后仍失败），实测**锚点非根因**——带锚点与展开版在修复后均验证可用。live 源配置保留固件烘焙的原始（带锚点）版本，与下次固件一致。
 
+### 10. 订阅更新后 custom_fakeip_filter 持久性验证与自愈加固（2026-08-12 追加）
+
+- **验证结论：更新订阅后修复依然生效**。模拟完整更新流程（重新下载 666OS YYDS 模板 → 注入机场订阅 URL → 替换 `config/MihomoPro.yaml` → 重启 OpenClash）后：运行 yaml 的 fake-ip-filter 自定义条目仍为 6 条、0 pull error、DNS 分流正常、出站正常。原因：`custom_fakeip_filter=1` 存于 uci（overlay），列表文件存于 `/etc/openclash/custom/`（overlay），`yml_change.sh` 每次生成配置时重新合并（`merge_list_from_file` 自带去重）。
+- **已排查无风险的操作**：OpenClash stop/restart 的残留清理只删 `/tmp` 与 dnsmasq 配置（`dnsmasq_openclash_custom_domain.conf` 等），**不触碰 `/etc/openclash/custom/`**；`one_key_update`/`plugin_update` 只更新核心/插件，不重置 uci 配置；LuCI「更新配置」（`action_update_config`）走 `openclash.sh` → yml_change 重新合并；provider 节点更新只动 `proxy_provider/` 缓存。
+- **自愈加固（rc.local）**：每次启动检查 `custom_fakeip_filter=1` 与列表文件存在性，被误删/改回 0 时自动恢复（内容与 `Files/etc/openclash/custom/openclash_custom_fake_filter.list` 一致）。已实测：删除列表 + 标志归 0 → 运行自愈块 → 列表重建、标志恢复 1 → 重启后运行 yaml 仍 6 条、0 错误。
+- **刷机即自愈**：列表文件烘焙进 `/rom`（Files/ → rootfs），恢复出厂设置后 uci-defaults 重新执行 + `/rom` 文件保留，修复不丢。
+
 ### 7. 其他排查结论
 - **SSH "密码错误" 根因**：非路由器故障，是 `sshpass` 在 Git Bash 下的 PTY 兼容问题。改用 OpenSSH `SSH_ASKPASS` 机制后 root/root 正常登录。
 - **SSH 主机密钥变更告警**：known_hosts 里 192.168.1.1 的旧条目来自刷机前的旧固件，已清理（备份 `known_hosts.old`）。
@@ -100,7 +107,7 @@ CONFIG_PACKAGE_acme=y
 | `homeproxy` | 保留用户节点（edgetunnel）与自定义 DNS（未启用） |
 | `upnpd` | 保留自定义 UUID / STUN（启用状态） |
 | `ubootenv` / `cpufreq` / `autoreboot` / `fstab` / `openssl` / `partexp` / `mdmconfig` / `wireless` | 设备相关或含自定义值的配置，保留 |
-| `crontabs/root` | 新增：00:00 续期 / 00:05 重载 uhttpd / 00:20 证书检查告警 |
+| `crontabs/root` | 新增：00:00 续期 / 00:05 重载 uhttpd / 00:20 证书检查告警；周一面板周更（05:00 Zashboard / 06:00 Metacubexd，`openclash_download_dashboard.sh`） |
 
 ### 自定义项脚本（`Files/etc/uci-defaults/`，新增）
 按「仓库只保留自定义项、其余默认选项由软件包自动生成」原则，把整文件覆盖改为**首次开机 uci-defaults 脚本**（默认选项随软件包版本自动继承，重置/重刷后同样生效）：
@@ -124,10 +131,12 @@ CONFIG_PACKAGE_acme=y
 
 ### 启动脚本（`Files/etc/rc.local`）
 - 每次开机重建 dnsmasq 备用上游 conf 文件（`/tmp` 重启即清）+ 重启 dnsmasq；
-- 开机 ~90 秒后台触发证书自愈（首次开机即尝试签发 LE 证书）。
+- 开机 ~90 秒后台触发证书自愈（首次开机即尝试签发 LE 证书）；
+- 开机 ~30 秒后台触发首次引导（等 OpenClash 就绪 + 科学上网可用后自动更新 GEO 数据库 / 大陆白名单 / Zashboard / Metacubexd）。
 
 ### 新增脚本
 - `Files/usr/share/buffy/cert_check.sh` —— 证书健康检查 + ntfy 告警（见上）。
+- `Files/usr/share/buffy/first_boot_download.sh` —— 首次开机引导：等 OpenClash 启动完成、科学上网可用后，后台自动更新 GEO 数据库（GeoIP/GeoSite/ASN/Country，`openclash_geo.sh all`）、大陆白名单（chnroute v4/v6，`openclash_chnroute.sh`）、面板版本（Zashboard / Metacubexd，`openclash_download_dashboard.sh`）；成功写标记 `/etc/.openclash-bootstrap-done` 仅执行一次，失败下次开机重试。
 - `Files/usr/lib/acme/client/dnsapi/dns_duckdns.sh` —— acme.sh 的 DuckDNS DNS-01 插件（acme 包不自带，需随固件补齐）。
 - `Files/etc/openclash/custom/openclash_custom_domain_dns.list` —— 第二DNS服务器域名列表（`reason195.duckdns.org`，dnsmasq 侧，经 223.5.5.5 解析真实 IP）。
 - **已删除** `openclash_custom_fake_filter.list` / `openclash_custom_domain_dns_policy.list` —— 包自带模板文件（luci-app-openclash 自带），旧方案残留；相关开关 `custom_fakeip_filter`/`custom_name_policy` 已关闭（包默认 0），不再烘焙以冻结模板。
@@ -141,6 +150,7 @@ CONFIG_PACKAGE_acme=y
 3. **远程访问**：外网 `ssh root@reason195.duckdns.org` 与 `https://reason195.duckdns.org` 可用（防火墙已放行 v6）。
 4. **HTTPS**：开机先用自签证书过渡，~90 秒后后台签发正式 LE 证书并自动切换，浏览器无告警；每日自动续期，失败推送 ntfy 告警。
 5. **DNS-rebind**：`cn.ntp.org.cn` 等含内网 IP 的域名已放行，局域网 NTP 对时不再被误拦。
+6. **首次开机自动更新**：等 OpenClash 启动完成、科学上网可用后，后台自动更新 GEO 数据库（GeoIP/GeoSite/ASN/Country）、大陆白名单（chnroute v4/v6）与面板版本（Zashboard / Metacubexd）；任一步失败下次开机自动重试，全部成功后不再重复（标记 `/etc/.openclash-bootstrap-done`，日志 `/tmp/first_boot_download.log`）。
 
 ---
 

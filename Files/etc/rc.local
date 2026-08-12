@@ -41,7 +41,29 @@ printf 'server=223.5.5.5\nserver=119.29.29.29\nserver=2400:3200::1\n' > "$DIR/60
 chmod 644 "$DIR/60-fallback.conf"
 /etc/init.d/dnsmasq restart >/dev/null 2>&1
 
+# custom_fakeip_filter 自愈（防断网修复项）：订阅源/规则源/DDNS 等域名必须返回真实 IP。
+# 若列表文件被误删、uci 标志被改回 0（本机无任何 OpenClash 操作会动它们，此为双保险），
+# 每次启动时恢复。注意：内容与 Files/etc/openclash/custom/openclash_custom_fake_filter.list 保持一致。
+uci -q get openclash.config.custom_fakeip_filter | grep -q '^1$' || {
+  uci set openclash.config.custom_fakeip_filter='1'
+  uci commit openclash 2>/dev/null
+}
+[ -s /etc/openclash/custom/openclash_custom_fake_filter.list ] || cat > /etc/openclash/custom/openclash_custom_fake_filter.list <<'EOF'
+# OpenClash custom_fakeip_filter 域名列表（rc.local 自愈重建，与 Files/etc/openclash/custom/ 保持一致）
++.aisaka-taiga.com
++.duckdns.org
++.github.com
++.githubusercontent.com
++.githubassets.com
++.jsdelivr.net
+EOF
+chmod 644 /etc/openclash/custom/openclash_custom_fake_filter.list 2>/dev/null
+
 # Let's Encrypt 证书后台自愈（首次开机即尝试签发，缺失时由每日 cron 重试）
 ( sleep 90; /usr/share/buffy/cert_check.sh >/dev/null 2>&1 ) &
+
+# 首次开机引导：等 OpenClash 启动完成、科学上网可用后，后台自动更新 GEO 数据库 / 大陆白名单 / Zashboard / Metacubexd
+# （脚本自检标记 /etc/.openclash-bootstrap-done，仅首启执行；失败下次开机重试）
+( sleep 30; /usr/share/buffy/first_boot_download.sh >/dev/null 2>&1 ) &
 
 exit 0
