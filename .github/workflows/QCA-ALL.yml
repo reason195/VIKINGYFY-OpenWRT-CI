@@ -149,13 +149,16 @@ jobs:
       GH_REPO: ${{github.repository}}
     steps:
       - name: Send Telegram Notification
-        # 未配置 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 时跳过，不报错
-        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        # env 上下文不能用于 if 条件，未配置 secret 时在脚本内跳过
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
           TELEGRAM_CHAT_ID: ${{secrets.TELEGRAM_CHAT_ID}}
         run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "未配置 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID，跳过通知。"
+            exit 0
+          fi
           RESULT=${{needs.config.result}}
           RUN_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
