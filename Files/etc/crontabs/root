@@ -10,3 +10,6 @@
 0 0 * * * /etc/init.d/acme renew
 5 0 * * * /etc/init.d/uhttpd restart
 20 0 * * * /usr/share/buffy/cert_check.sh
+
+#路由器全面体检（WAN/DDNS证书/dnsmasq备用上游/防火墙IPv6/流量卸载），异常时 ntfy 告警
+30 6 * * * /usr/share/buffy/health_check.sh

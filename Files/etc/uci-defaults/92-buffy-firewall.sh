@@ -4,6 +4,12 @@
 # 不在此烘焙，随包更新自动继承。
 exec 2>/dev/null
 # --- defaults: 硬件流卸载 + fullcone6 ---
+# 关键：fw4 的 resolve_offload_devices() 先判断 flow_offloading（软件开关），
+# 未开启则直接返回空、根本不会生成 flowtable —— 只设 flow_offloading_hw 是无效的。
+# 必须两个都开：软件开关负责生成 flowtable + flow offload 规则，硬件开关在其上加 flags offload。
+# 内核不支持硬件卸载时 fw4 会自动回退为软件卸载，不会报错断网。
+uci -q delete firewall.@defaults[0].flow_offloading
+uci set firewall.@defaults[0].flow_offloading='1'
 uci -q delete firewall.@defaults[0].flow_offloading_hw
 uci set firewall.@defaults[0].flow_offloading_hw='1'
 uci -q delete firewall.@defaults[0].fullcone6

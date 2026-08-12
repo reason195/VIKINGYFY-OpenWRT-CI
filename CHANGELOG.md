@@ -1,3 +1,44 @@
+# 变更记录（2026-08-13）：开机噪音根治 + 开机自检/全机体检 + 硬件流卸载修复
+
+在上一轮验收基础上收尾四件事：根治 OpenClash 开机日志噪音、加开机自检与告警、加全机体检脚本、修复硬件流量卸载未默认开启。
+
+## 一、根治 OpenClash 开机 shell 噪音（'1/0: not found' + 'sh: out of range'）
+
+- **现象**：每次开机 logread 里都出现 10 行噪音，夹在「OpenClash Already Stop!」与「OpenClash Already Start!」之间：
+  ```
+  /etc/rc.d/S99openclash: /etc/rc.common: line 42: 1: not found
+  /etc/rc.d/S99openclash: /etc/rc.common: line 42: 0: not found
+  ...（line 42~48 各两行）
+  /etc/rc.d/S99openclash: sh: out of range
+  ```
+- **根因（设备实测 + 上游 issue #4822/#5084 确认）**：`boot() -> restart() -> stop_service/start_service` 整条启动链路未重定向输出；`start_service` 的 `do_run_file()` 里那行包管理器检测 `[ "$small_flash_memory" == "1" ] || ... || $(opkg status libc ...) || $(apk list libc ...) && mkdir -p /tmp/etc/openclash && CACHE_PATH=...` 的 `&&`/`||` 优先级与命令替换在 busybox ash 下触发 `1/0: not found` + `sh: out of range`（报错行号落在 `/etc/rc.common` 的 `enable()` 函数体 line 42~48）。纯噪音：核心随后照常 `Start Successful`，不影响任何功能（此前已实测）。
+- **修复**（`Scripts/Handles.sh` 构建期补丁，最小改动）：把 `boot()` 末尾的 `restart` 改为 `restart >> "$LOG_FILE" 2>/dev/null`——函数重定向会传导到所有子调用（含后台 `check_core_status`），噪音从 stderr 彻底消失；`LOG_*` 本就写 `/tmp/openclash*.log`，诊断信息不受影响。upstream 结构变化时 WARN 跳过、不阻断构建。
+
+## 二、开机自检（防「看似启动、实际未接管流量」的静默故障）
+
+新增 `Files/usr/share/buffy/boot_selfcheck.sh`（rc.local 开机 120s 后台拉起，flock 防重入）：
+- 校验核心 `/etc/openclash/core/clash_meta` 存在且可执行；
+- 等 `pidof clash` + external-controller(9090/`cn_port`) 应答（最长 5 分钟）；
+- 端到端代理 204（路由器自身经 clash + 显式 7890/7891/7893 端口兜底，最长 5 分钟，规避「启动早期节点未就绪」竞态）；
+- 失败写 `/tmp/boot_selfcheck.log` 并推 ntfy `buffy-reason195-router`（同次开机去重）；成功只更新时间戳不打扰。
+- 守卫按「MihomoPro.yaml 存在即校验」而非 `enable` 标志——因为 init 的 `start_fail()` 失败时会把 enable 清零，只盯 enable 会漏掉最该告警的静默故障。
+
+## 三、全机体检（非 OpenClash 项）
+
+新增 `Files/usr/share/buffy/health_check.sh`（每日 06:30 cron，可手动运行，失败推 ntfy）：
+- WAN：IPv4 默认路由/网关可达/公网 IPv4 可达/IPv6 地址与可达性/DNS 解析；
+- DDNS 证书：`reason195.duckdns.org` 可解析 + LE 证书剩余天数（>14 天）；
+- dnsmasq 备用上游：`60-fallback.conf` 按真实 conf-dir（`/tmp/dnsmasq.<cfgid>.d`）glob 定位、dnsmasq 运行、本地解析；
+- 防火墙：IPv6 放行规则（`Allow-WAN-SSH-v6`/`Allow-WAN-LuCI-v6`）、wan 区域 forward=DROP、IPv6 转发；
+- 硬件流量卸载：开关 + nft flowtable 状态。
+
+## 四、修复：硬件流量卸载默认未开启
+
+- **根因**：`92-buffy-firewall.sh` 只设了 `flow_offloading_hw=1`。查 fw4 源码（`fw4.uc` 的 `resolve_offload_devices()`）发现它**先判断软件开关 `flow_offloading`，未开启则直接返回空、根本不生成 flowtable**——只开硬件开关等于没开。
+- **修复**：补设 `flow_offloading=1`（软件开关负责生成 flowtable + `flow offload` 规则，硬件开关在其上加 `flags offload`；内核不支持硬件时 fw4 自动回退软件卸载，不会断网）。
+
+---
+
 # 变更记录（2026-08-13 追加）：路由器重启起不来 + 构建阶段预置 GEO/白名单/最新面板
 
 用户反映「路由器重启后起不来，必须手动断电才能恢复网络」，同时要求验证并固化构建阶段的 GEO 数据库、大陆白名单下载与面板版本更新。本轮三项改动均已完成并本地验证。

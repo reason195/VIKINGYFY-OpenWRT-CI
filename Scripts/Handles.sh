@@ -422,6 +422,41 @@ PYEOF
 	fi
 fi
 
+#修复 OpenClash init 脚本开机噪音（logread 里的 '1: not found' / '0: not found' / 'sh: out of range'）
+#根因（设备实测 + 上游 issue #4822/#5084 确认）：boot() -> restart() -> stop_service/start_service
+#整条启动链路未重定向输出，start_service 的 do_run_file() 里那行 opkg/apk 检测
+#（[ "$small_flash_memory" == "1" ] || ... || $(opkg status libc ...) || $(apk list libc ...) && ...）
+#的 &&/|| 优先级与命令替换在 busybox ash 下触发 '1/0: not found' + 'sh: out of range' 噪音，被 procd
+#打进开机日志（报错行号落在 /etc/rc.common 的 enable() 函数体 line 42~48）。纯噪音：核心随后照常 Start Successful。
+#最小修复：boot() 末尾的 restart 改为重定向到 OpenClash 日志并丢弃 stderr。
+#（LOG_* 本就写 /tmp/openclash*.log 不受影响；重定向会传导到函数内所有子调用，含后台 check_core_status。）
+#适用于所有平台（openclash 由 GENERAL.txt 全平台构建）；upstream 结构变化时告警跳过，不阻断构建。
+OC_INIT_DIR="$(find "$PKG_PATH" -maxdepth 3 -type d -iname '*openclash*' -print -quit)"
+if [ -n "$OC_INIT_DIR" ]; then
+	OC_INIT="$OC_INIT_DIR/root/etc/init.d/openclash"
+	if [ -f "$OC_INIT" ]; then
+		echo " "
+		python3 - "$OC_INIT" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+# boot() 结尾是 "   restart\n}"（restart() 结尾是 "   start\n}"），该两行序列全文件唯一
+old = "   restart\n}"
+new = "   restart >> \"$LOG_FILE\" 2>/dev/null\n}"
+n = s.count(old)
+if n == 1:
+    open(p, "w", encoding="utf-8").write(s.replace(old, new))
+    print("openclash init boot noise patched!")
+else:
+    print("WARN: openclash init boot() 结构变化（匹配 %d 处），跳过去噪补丁" % n)
+PYEOF
+	else
+		echo "WARN: 未找到 openclash init 脚本，跳过去噪补丁"
+	fi
+else
+	echo "WARN: 未找到 openclash 目录，跳过去噪补丁"
+fi
+
 #修改argon主题字体和颜色
 if [ -d "$PKG_PATH/luci-theme-argon" ]; then
 	echo " "
