@@ -72,11 +72,26 @@ jobs:
           else
             UP_SHA="${{steps.upstream.outputs.sha}}"
             LAST_SHA="${{steps.last.outputs.sha}}"
-            if [ -n "$LAST_SHA" ] && [ "${UP_SHA:0:7}" = "$LAST_SHA" ]; then
-              echo "上游源码无更新，跳过编译！"
-              echo "skip=true" >> $GITHUB_OUTPUT
+            if [ -n "$LAST_SHA" ] && [ -n "$UP_SHA" ]; then
+              # 短哈希先解析为完整 SHA，再走 compare API 判断（可正确处理 force-push/分叉）
+              FULL_SHA=$(gh api "repos/VIKINGYFY/immortalwrt/commits/$LAST_SHA" --jq .sha 2>/dev/null)
+              if [ -n "$FULL_SHA" ]; then
+                READ=$(gh api "repos/VIKINGYFY/immortalwrt/compare/$FULL_SHA...$UP_SHA" --jq '.status + " " + (.ahead_by|tostring)' 2>/dev/null)
+                STATUS=${READ%% *}
+                AHEAD=${READ##* }
+                if [ "$STATUS" = "identical" ]; then
+                  echo "上游源码无更新，跳过编译！"
+                  echo "skip=true" >> $GITHUB_OUTPUT
+                else
+                  echo "检测到上游源码更新（+${AHEAD:-?} 提交），开始编译！"
+                  echo "skip=false" >> $GITHUB_OUTPUT
+                fi
+              else
+                echo "上次构建哈希解析失败，按有更新处理，开始编译！"
+                echo "skip=false" >> $GITHUB_OUTPUT
+              fi
             else
-              echo "检测到上游源码更新，开始编译！"
+              echo "无法获取哈希，按有更新处理，开始编译！"
               echo "skip=false" >> $GITHUB_OUTPUT
             fi
           fi
