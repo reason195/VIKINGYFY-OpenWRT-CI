@@ -250,8 +250,22 @@ jobs:
             else
               echo "WRT_CHANGES=（与上次发布相比无新提交）" >> $GITHUB_ENV
             fi
+            # 上游源码提交数统计：从上一个 release 正文读上次构建的上游哈希，
+            # 用 compare API 算出本次构建较上次多几个上游提交（无法对比时留空）
+            PREV_SHA=$(gh release view "$PREV_TAG" --json body -q .body 2>/dev/null \
+              | grep -oP '(?<=提交：)[0-9a-f]+' | head -n 1)
+            if [ -n "$PREV_SHA" ] && [ -n "$WRT_HASH" ] && [ "$PREV_SHA" != "$WRT_HASH" ]; then
+              N=$(gh api "repos/$WRT_SOURCE/compare/$PREV_SHA...$WRT_HASH" --jq '.ahead_by' 2>/dev/null)
+              case "$N" in
+                ''|*[!0-9]*) echo "WRT_UPSTREAM_NOTE=" >> $GITHUB_ENV ;;
+                *) echo "WRT_UPSTREAM_NOTE=（较上次构建上游 +${N} 提交）" >> $GITHUB_ENV ;;
+              esac
+            else
+              echo "WRT_UPSTREAM_NOTE=" >> $GITHUB_ENV
+            fi
           else
             echo "WRT_CHANGES=首次发布" >> $GITHUB_ENV
+            echo "WRT_UPSTREAM_NOTE=" >> $GITHUB_ENV
           fi
 
       - name: Release Firmware
@@ -268,7 +282,7 @@ jobs:
 
             源码：${{env.WRT_REPO}}
             分支：${{env.WRT_BRANCH}}
-            提交：${{env.WRT_HASH}}
+            提交：${{env.WRT_HASH}}${{env.WRT_UPSTREAM_NOTE}}
 
             配置：${{env.WRT_CONFIG}}
             平台：${{env.WRT_TARGET}}
