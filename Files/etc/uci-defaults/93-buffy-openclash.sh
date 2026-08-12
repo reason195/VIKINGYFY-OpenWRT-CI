@@ -23,10 +23,12 @@ uci -q delete openclash.config.github_address_mod
 uci set openclash.config.github_address_mod='https://testingcf.jsdelivr.net/'
 uci -q delete openclash.config.enable_geoip_dat
 uci set openclash.config.enable_geoip_dat='1'
-uci -q delete openclash.config.custom_fakeip_filter
-uci set openclash.config.custom_fakeip_filter='1'
-uci -q delete openclash.config.custom_name_policy
-uci set openclash.config.custom_name_policy='1'
+# 第二DNS服务器（dnsmasq 侧）：指定域名不走 clash fake-ip，直接经 223.5.5.5 解析真实 IP
+# 域名列表见 /etc/openclash/custom/openclash_custom_domain_dns.list
+uci -q delete openclash.config.enable_custom_domain_dns_server
+uci set openclash.config.enable_custom_domain_dns_server='1'
+uci -q delete openclash.config.custom_domain_dns_server
+uci set openclash.config.custom_domain_dns_server='223.5.5.5'
 uci -q delete openclash.config.skip_proxy_address
 uci set openclash.config.skip_proxy_address='1'
 uci -q delete openclash.config.enable_meta_sniffer

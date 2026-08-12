@@ -226,10 +226,22 @@ if [[ "${WRT_TARGET,,}" == *"qualcommax"* ]]; then
 		if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 60 \
 			"https://raw.githubusercontent.com/666OS/YYDS/refs/heads/main/mihomo/config/legacy/MihomoPro.yaml" \
 			-o "$CONF_PATH/MihomoPro.yaml"; then
-			#替换订阅地址
-			sed -i "s|https://[^\"]*优质订阅源[^\"]*|https://kaze1.aisaka-taiga.com/oosaka/34b430bdcde6e89e40f96d816baf450c|g" "$CONF_PATH/MihomoPro.yaml"
-			sed -i "s|优质订阅源地址|https://kaze1.aisaka-taiga.com/oosaka/34b430bdcde6e89e40f96d816baf450c|g" "$CONF_PATH/MihomoPro.yaml"
-			sed -i "s|备用订阅源地址|http://141.148.169.212:8080/sub/starter2026/mihomo.yaml|g" "$CONF_PATH/MihomoPro.yaml"
+			#替换订阅地址（主订阅 MAIN_AIRPORT_SUB / 备用 BACKUP_AIRPORT_SUB，来自 GitHub Secrets）
+			[ -n "$MAIN_AIRPORT_SUB" ] || { echo "ERROR: 缺少必需的 GitHub Secret: MAIN_AIRPORT_SUB（请在仓库 Settings → Secrets 中配置）"; exit 1; }
+			[ -n "$BACKUP_AIRPORT_SUB" ] || { echo "ERROR: 缺少必需的 GitHub Secret: BACKUP_AIRPORT_SUB（请在仓库 Settings → Secrets 中配置）"; exit 1; }
+			# 用 python 做字面替换（订阅 URL 常含 & 等查询参数，sed 会将其当作特殊字符损坏地址）
+			MAIN_AIRPORT_SUB="$MAIN_AIRPORT_SUB" BACKUP_AIRPORT_SUB="$BACKUP_AIRPORT_SUB" python3 - "$CONF_PATH/MihomoPro.yaml" <<'PYEOF'
+import os, sys
+p = sys.argv[1]
+main = os.environ["MAIN_AIRPORT_SUB"]
+back = os.environ["BACKUP_AIRPORT_SUB"]
+s = open(p, encoding="utf-8").read()
+# YYDS 模板中的占位符为纯文本「优质订阅源地址」「备用订阅源地址」（见 proxy-providers 段）
+s = s.replace("优质订阅源地址", main)
+s = s.replace("备用订阅源地址", back)
+open(p, "w", encoding="utf-8").write(s)
+print("sub URLs injected")
+PYEOF
 			echo "MihomoPro.yaml has been updated!"
 		else
 			echo "MihomoPro.yaml download failed; continuing!"

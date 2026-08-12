@@ -49,7 +49,8 @@
 ### 8. 按 Aethersailor 方案调整 OpenClash（2026-08-12 追加）
 用户要求按 [Custom_OpenClash_Rules 设置方案](https://github.com/Aethersailor/Custom_OpenClash_Rules/wiki/OpenClash-%E8%AE%BE%E7%BD%AE%E6%96%B9%E6%A1%88) 调整，逐项落地并验证：
 - **cachesize 归 0**：`disable_masq_cache` 0→**1**、`dnsmasq_cachesize`→**0**、`cachesize_dns`→**1**、dhcp `cachesize`→**0**。重启后运行期 `cache disabled`，方案要求的「禁止 Dnsmasq 缓存 DNS」生效（此前的 2048 缓存工作按用户决定撤销）。
-- **第二 DNS（DDNS 域名返回真实 IP）**：启用 `custom_fakeip_filter` + `custom_name_policy`，在 `openclash_custom_fake_filter.list` / `openclash_custom_domain_dns_policy.list` 中加入 `reason195.duckdns.org → 223.5.5.5`。验证：该域名返回真实 IP（13.251.105.66），不再被 fake-ip 劫持。
+- **第二 DNS（DDNS 域名返回真实 IP）**：采用 LuCI「DNS 设置」页的**第二DNS服务器**开关（`enable_custom_domain_dns_server=1` + `custom_domain_dns_server=223.5.5.5`，dnsmasq 侧，`server=/reason195.duckdns.org/223.5.5.5`）。验证：该域名返回真实 IP（13.251.105.66 / 2409:8a5c:...），不再被 fake-ip 劫持。
+- **修正（2026-08-12）**：此前误用 `custom_name_policy`（nameserver-policy，clash DNS 引擎层）实现近似效果——那不是方案内容，且经实测在 0.47.156 下**未真正生效**（运行 yaml 无 nameserver-policy 段、无 reason195 条目）。已改回方案对应的 dnsmasq 侧开关，并关闭 `custom_name_policy`/`custom_fakeip_filter`（包默认即为 0）。
 - **GeoIP Dat**：`enable_geoip_dat` 0→**1**。
 - **清理 Fallback 组**：禁用 `dns.google/dns-query`、`dns.cloudflare.com/dns-query`（方案要求无 fallback，非直连域名交远端解析）。
 - **自动更新**：GEO/GeoIP/白名单数据库自动更新本就开启（每周，满足方案要求）；**配置本体的自动更新不适用**——当前是手动 YAML 路径（无订阅条目），方案三选一中的自动更新需改为订阅转换/覆写模块，为避免重蹈断网覆辙未切换。
@@ -98,7 +99,7 @@ CONFIG_PACKAGE_acme=y
 | `90-buffy-dropbear.sh` | 删除 `DirectInterface lan`（监听所有接口，外网 SSH 可达）；其余用 dropbear 包默认 |
 | `91-buffy-uhttpd.sh` | `redirect_https=1` + 监听 443（自签证书首启自动生成，LE 证书签发后自动切换）；其余用 uhttpd 包默认 |
 | `92-buffy-firewall.sh` | 新增 `Allow-WAN-SSH-v6`（tcp 22）/ `Allow-WAN-LuCI-v6`（tcp 80/443）两条 v6 放行规则 + `flow_offloading_hw`/`fullcone6` + wan 区域 `forward=DROP`；区域、默认规则及各软件包 include 均由包自行管理 |
-| `93-buffy-openclash.sh` | `en_mode/operation_mode=fake-ip`、`redirect_dns=1`、`enable_respect_rules=1`、`log_level=error`、`china_ip_route=1`、`core_type=Meta`、`core_version=linux-arm64`、`github_address_mod`（镜像）、`enable_geoip_dat=1`、`custom_fakeip_filter/custom_name_policy=1`（第二 DNS）、`skip_proxy_address=1`、Meta sniffer、GEO/GeoIP/白名单自动更新、`disable_quic_go_gso`、dashboard 与 API 认证；dns_servers 等其余全部用包默认 |
+| `93-buffy-openclash.sh` | `en_mode/operation_mode=fake-ip`、`redirect_dns=1`、`enable_respect_rules=1`、`log_level=error`、`china_ip_route=1`、`core_type=Meta`、`core_version=linux-arm64`、`github_address_mod`（镜像）、`enable_geoip_dat=1`、第二 DNS（`enable_custom_domain_dns_server=1` + `custom_domain_dns_server=223.5.5.5`，dnsmasq 侧）、`skip_proxy_address=1`、Meta sniffer、GEO/GeoIP/白名单自动更新、`disable_quic_go_gso`、dashboard 与 API 认证；dns_servers 等其余全部用包默认 |
 
 > 说明：openclash 的 `enable`/`config_path` **不**在 uci-defaults 里设置——`rc.local` 检测到 `/etc/openclash/config/MihomoPro.yaml` 存在时才启用，避免空配置空转。`cachesize_dns`/`dnsmasq_cachesize` 为 OpenClash 运行时记账字段，不固化。
 
@@ -117,8 +118,8 @@ CONFIG_PACKAGE_acme=y
 ### 新增脚本
 - `Files/usr/share/buffy/cert_check.sh` —— 证书健康检查 + ntfy 告警（见上）。
 - `Files/usr/lib/acme/client/dnsapi/dns_duckdns.sh` —— acme.sh 的 DuckDNS DNS-01 插件（acme 包不自带，需随固件补齐）。
-- `Files/etc/openclash/custom/openclash_custom_fake_filter.list` —— 自定义 fake-ip-filter（含 `reason195.duckdns.org` 返回真实 IP）。
-- `Files/etc/openclash/custom/openclash_custom_domain_dns_policy.list` —— 自定义 nameserver-policy（`reason195.duckdns.org → 223.5.5.5`）。
+- `Files/etc/openclash/custom/openclash_custom_domain_dns.list` —— 第二DNS服务器域名列表（`reason195.duckdns.org`，dnsmasq 侧，经 223.5.5.5 解析真实 IP）。
+- **已删除** `openclash_custom_fake_filter.list` / `openclash_custom_domain_dns_policy.list` —— 包自带模板文件（luci-app-openclash 自带），旧方案残留；相关开关 `custom_fakeip_filter`/`custom_name_policy` 已关闭（包默认 0），不再烘焙以冻结模板。
 
 ---
 
@@ -132,13 +133,33 @@ CONFIG_PACKAGE_acme=y
 
 ---
 
-## 四、注意事项
+## 四、GitHub Secrets 注入机制（2026-08-12 新增）
 
-- **敏感信息**：DuckDNS token、订阅地址（MihomoPro.yaml）在仓库内为明文。请确保仓库为私有；token 如需轮换，改 `Files/etc/config/ddns` 与 `Files/etc/config/acme` 两处。
-- **account_email**：已与路由器实时状态同步为 `reason195@gmail.com`（Let's Encrypt 到期提醒会发到该邮箱）。
+敏感值不再入库，改为**占位符 + CI 构建时注入**：
+
+| Secret | 注入位置 | 说明 |
+|---|---|---|
+| `PPPOE_USERNAME` / `PPPOE_PASSWORD` | `Files/etc/config/network` | PPPoE 拨号账号密码 |
+| `DDNS_TOKEN` | `Files/etc/config/ddns` + `Files/etc/config/acme` | DuckDNS token（两处同步） |
+| `HP_ADDRESS` / `HP_UUID` | `Files/etc/config/homeproxy` | VLESS 节点地址 / UUID（address/tls_sni/ws_host 三处共用 HP_ADDRESS） |
+| `MAIN_AIRPORT_SUB` / `BACKUP_AIRPORT_SUB` | `Scripts/Handles.sh`（构建时写入 MihomoPro.yaml） | 机场主 / 备用订阅地址（YYDS 模板中的「优质订阅源」「备用订阅源」占位符） |
+| `ROUTER_ROOT_PASSWORD` | `Files/etc/shadow` | 生成 SHA-256 crypt 哈希（`openssl passwd -5`，与 OpenWrt `$5$` 格式一致）写入 root 行 |
+
+**工作机制**：
+- `Files/` 内以 `@@SECRET_NAME@@` 占位符替代明文；`Scripts/Settings.sh` 拷贝 `Files/` 后调用 `inject_secret()`（python3 字面替换，无正则/转义陷阱）注入；root 密码单独生成哈希写 shadow。
+- 任何必需 secret **未设置时构建直接失败**（exit 1），且注入后有占位符残留检查——绝不产出带占位符的坏固件。
+- `QCA-ALL.yml` 调用 `WRT-CORE.yml` 时 `secrets: inherit`，secrets 以环境变量传入。
+- 已用含特殊字符（`&`/`|`/`\`）的密码在本地完整模拟注入流程验证：所有位置替换正确、无残留、shadow 行 9 字段格式完整。
+
+---
+
+## 五、注意事项
+
+- **敏感信息**：全部敏感值已通过 GitHub Secrets 注入，仓库内无明文（`Files/etc/shadow` 保留出厂 root 密码哈希作为兜底，构建时被 `ROUTER_ROOT_PASSWORD` 覆盖）。请确保仓库为私有。
+- **account_email**：已与路由器实时状态同步为 `reason195@gmail.com`（Let's Encrypt 到期提醒会发到该邮箱，非敏感值保留明文）。
 - **仓库与路由器一致性**：已逐文件比对同步；`ddns`/`acme`/`network`/`system`/`rc.local` 与路由器实时状态字节级一致。`dhcp` 与 live 仅选项顺序差异（功能等价）；`crontabs/root` 未烧入 `coremark` 行（该包安装时自行添加）。
 - **配置简化重构**（本次新增）：已用路由器本地 apk 仓库提取的同版本包默认配置，在隔离 UCI 环境（`uci -c` 包装器）中对 4 个 uci-defaults 脚本做了端到端验证——基线为纯包默认（`DirectInterface=lan`、`redirect_https=0`、wan `forward=REJECT`、`log_level=0`），运行后全部正确应用，`enable` 保持默认 0（避免空配置空转），`dns_servers` 等默认内容原样保留。
-- **关于烘焙的凭据（未改动，仅提示）**：`Files/etc/shadow` 烘焙了 root 密码哈希（此固件出厂 root/root），`Files/etc/dropbear/*_host_key` 烘焙了 SSH 主机密钥（每台用同一固件的设备共享同一套主机密钥）。如担心固件分发后的安全（同密钥可互信 MITM），建议下次改动时删除这两个文件——dropbear 首启会自动重新生成主机密钥，root 密码建议刷机后立即在 LuCI 修改（重置会回到出厂值）。
+- **关于烘焙的凭据**：`Files/etc/dropbear/*_host_key` 仍烘焙了 SSH 主机密钥（每台用同一固件的设备共享同一套主机密钥）。如担心固件分发后的安全（同密钥可互信 MITM），建议删除——dropbear 首启会自动重新生成。root 密码已由 `ROUTER_ROOT_PASSWORD` secret 在构建时覆盖，刷机后为 secret 值。
 - **OpenClash 升级后**：`disable_masq_cache=1` 是按方案设定的期望状态（cachesize 0）。若后续版本/设置把它改回 0，cachesize 会回升——此时确认是否仍符合方案意图。
 - **自动更新说明**：配置本体（MihomoPro.yaml）是手动 YAML 路径，无订阅条目，无法自动更新；更新配置需手动在 OpenClash 中重新获取或重新编译固件（GEO/GeoIP/白名单数据库已每周自动更新）。
 - **ntfy 订阅**：`https://ntfy.sh/buffy-reason195-cert`（网页直接订阅，或手机 App）。仅失败/临期时推送，不会刷屏。
