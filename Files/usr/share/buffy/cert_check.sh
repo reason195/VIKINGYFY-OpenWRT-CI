@@ -3,7 +3,7 @@
 # 每日运行（cron 20 0 * * *）：
 #   - 证书缺失：尝试签发；连续失败 >=3 次推送告警
 #   - 证书临期（<=14 天）：尝试续期；续期失败推送告警
-# 告警通道：Telegram（token/chat_id 由构建 Secret 注入，见 /etc/buffy-notify.conf）。
+# 告警通道：ntfy.sh + Telegram（Telegram token/chat_id 由构建 Secret 注入，见 /etc/buffy-notify.conf）。
 
 . /usr/share/buffy/lib-buffy.sh
 
@@ -11,6 +11,7 @@ DOMAIN="reason195.duckdns.org"
 LEAF="/etc/acme/${DOMAIN}_ecc/${DOMAIN}.cer"
 FULLCHAIN="/etc/ssl/acme/${DOMAIN}.fullchain.crt"
 KEY="/etc/ssl/acme/${DOMAIN}.key"
+NTFY="https://ntfy.sh/buffy-reason195-cert"
 FAIL_CNT_FILE="/tmp/acme_fail_count"
 RENEW_WINDOW=1209600   # 14 天（秒）
 

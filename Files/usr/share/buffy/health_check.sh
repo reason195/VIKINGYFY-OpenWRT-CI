@@ -6,9 +6,10 @@
 # 检查：WAN 连通性(IPv4/IPv6) / DNS 解析 / DDNS 域名 / Let's Encrypt 证书 /
 #       dnsmasq 备用上游 / 防火墙 IPv6 放行 + wan forward=DROP / 硬件流量卸载。
 # 用法：手动 /usr/share/buffy/health_check.sh，或每日 cron（见 /etc/crontabs/root）。
-# 任一 FAIL：退出码非 0 并推 Telegram 告警；日志：/tmp/health_check.log
+# 任一 FAIL：退出码非 0 并推 ntfy/Telegram 告警；日志：/tmp/health_check.log
 
 LOG="/tmp/health_check.log"
+NTFY="https://ntfy.sh/buffy-reason195-router"
 DOMAIN="reason195.duckdns.org"
 LEAF="/etc/acme/${DOMAIN}_ecc/${DOMAIN}.cer"
 

@@ -1,12 +1,13 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 # proxy_watch.sh - 运行中周期性代理健康检查（cron 每小时）
-# 轻量：只做一次 204 探测，失败推 Telegram（同一失败周期内去重，避免每小时刷屏）。
+# 轻量：只做一次 204 探测，失败推 ntfy/Telegram（同一失败周期内去重，避免每小时刷屏）。
 # 日志：/tmp/proxy_watch.log
 
 . /usr/share/buffy/lib-buffy.sh
 
 LOG="/tmp/proxy_watch.log"
+NTFY="https://ntfy.sh/buffy-reason195-router"
 MARK_FAIL="/tmp/.proxy-watch-fail"
 
 log "=== proxy_watch: start ==="

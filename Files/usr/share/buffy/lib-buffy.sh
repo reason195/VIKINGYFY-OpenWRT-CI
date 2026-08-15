@@ -2,16 +2,22 @@
 # SPDX-License-Identifier: MIT
 # lib-buffy.sh - buffy 各脚本公共函数库（source 引入，勿直接执行）
 # 提供：log / notify / resolve / cert_expires_within / openclash_ready / proxy_204
-# 约定：调用方需先定义 LOG（log 用）。notify 走 Telegram，凭据见 /etc/buffy-notify.conf。
+# 约定：调用方需先定义 LOG（log 用）、NTFY（ntfy 告警，可选）。notify 同时走 ntfy 与 Telegram。
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
-notify() { # $1=标题 $2=正文；未配置凭据则静默跳过
+notify() { # $1=标题 $2=正文；ntfy 与 Telegram 双通道，均未配置则静默跳过
+	# ntfy 通道（调用方设置 NTFY 时启用）
+	if [ -n "$NTFY" ]; then
+		curl -fsS -m 10 -H "Title: $1" -H "Priority: high" -d "$2" "$NTFY" >/dev/null 2>&1
+	fi
+	# Telegram 通道（凭据由构建 Secret 注入 /etc/buffy-notify.conf）
 	[ -f /etc/buffy-notify.conf ] && . /etc/buffy-notify.conf
-	[ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] || return 0
-	curl -fsS -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-		-d "chat_id=${TELEGRAM_CHAT_ID}" \
-		--data-urlencode "text=【$1】$2" >/dev/null 2>&1
+	if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+		curl -fsS -m 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+			-d "chat_id=${TELEGRAM_CHAT_ID}" \
+			--data-urlencode "text=【$1】$2" >/dev/null 2>&1
+	fi
 }
 
 # 解析域名：解析出至少一个地址才算成功（busybox nslookup 失败也可能返回 0，故按输出判断）

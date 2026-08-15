@@ -5,10 +5,11 @@
 # boot_selfcheck.sh - 开机自检（每 boot 一次，rc.local 延迟拉起）
 # 目的：确认 OpenClash 核心进程 + 代理链路(204) 真的可用，避免"看似启动、实际未接管流量"的静默故障。
 # 成功：更新 /tmp/.boot-selfcheck-ok 时间戳，不打扰。
-# 失败：写 /tmp/boot_selfcheck.log 并推 Telegram 告警（同一次开机内去重，下次开机 /tmp 清空自动重置）。
+# 失败：写 /tmp/boot_selfcheck.log 并推 ntfy/Telegram 告警（同一次开机内去重，下次开机 /tmp 清空自动重置）。
 # 日志：/tmp/boot_selfcheck.log
 
 LOG="/tmp/boot_selfcheck.log"
+NTFY="https://ntfy.sh/buffy-reason195-router"
 MARK_OK="/tmp/.boot-selfcheck-ok"
 MARK_FAIL="/tmp/.boot-selfcheck-fail"
 LOCK="/tmp/.boot-selfcheck.lock"
