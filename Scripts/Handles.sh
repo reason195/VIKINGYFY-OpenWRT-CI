@@ -314,7 +314,15 @@ for line in open(p, encoding="utf-8"):
                     cur = None
 PYEOF
 )
-		echo "All rule-sets have been preloaded! ($(ls "$RULE_DIR" | wc -l) files)"
+		RULE_COUNT=$(ls "$RULE_DIR" | wc -l)
+		# 质检：规则集数量下限。若上游 666OS 模板格式变化，上面的解析可能一条都匹配不到，
+		# 但下载循环体不执行、也不报错，会静默产出"规则集为空"的固件 → 刷机首启 DNS 死锁（曾实发断网）。
+		# 正常约 40 个（39 个 666OS 规则 + 包自带 oc-cn-domain.mrs），低于 30 视为解析失败，终止构建。
+		if [ "$RULE_COUNT" -lt 30 ]; then
+			echo "ERROR: rule-set 解析/下载数量异常（仅 $RULE_COUNT 个），疑似上游模板格式变化，终止构建！"
+			exit 1
+		fi
+		echo "All rule-sets have been preloaded! ($RULE_COUNT files)"
 
 		#预置 GEO 数据库（GeoIP/GeoSite/ASN/Country）：首启即用，不依赖首启联网下载。
 		#下载源与 openclash_geo.sh 一致（Loyalsoldier/v2ray-rules-dat、xishang0128/geoip、alecthw/mmdb_china_ip_list），

@@ -16,9 +16,8 @@ LOG="/tmp/first_boot_download.log"
 DONE="/etc/.openclash-bootstrap-done"
 LOCK="/tmp/.openclash-bootstrap.lock"
 
-log() {
-	echo "$(date '+%F %T') $*" >> "$LOG"
-}
+# 公共函数（log/openclash_ready/proxy_204 等）
+. /usr/share/buffy/lib-buffy.sh
 
 # 幂等 + 防并发（同一时刻只跑一个实例）
 [ -f "$DONE" ] && exit 0
@@ -29,13 +28,6 @@ flock -n 9 2>/dev/null || exit 0
 log "=== first_boot_download: start ==="
 
 # ---- 1. 等待 OpenClash 启动完成（核心进程 + 控制端口就绪），最长 10 分钟 ----
-openclash_ready() {
-	[ -n "$(pgrep -f '[c]lash_meta')" ] || return 1
-	# 核心进程在跑还不够，等 external-controller(9090) 可应答才算启动完成
-	code=$(curl -m 3 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/version 2>/dev/null)
-	[ -n "$code" ] && [ "$code" != "000" ]
-}
-
 WAIT=0
 while [ "$WAIT" -lt 600 ]; do
 	if openclash_ready; then
@@ -51,19 +43,9 @@ if [ "$WAIT" -ge 600 ]; then
 fi
 
 # ---- 2. 等待科学上网可用（端到端：直连经 clash 分流 + 兜底显式代理端口），最长 15 分钟 ----
-proxy_ok() {
-	# 端到端：路由器自身请求 www.google.com，经 clash fake-ip → 规则 → 代理节点
-	[ "$(curl -m 10 -s -o /dev/null -w '%{http_code}' https://www.google.com/generate_204 2>/dev/null)" = "204" ] && return 0
-	# 兜底：显式经 clash 混合/HTTP/SOCKS 端口（OpenClash 常用端口全覆盖）
-	for p in 7890 7891 7893; do
-		[ "$(curl -m 8 -s -o /dev/null -w '%{http_code}' -x "http://127.0.0.1:$p" https://www.google.com/generate_204 2>/dev/null)" = "204" ] && return 0
-	done
-	return 1
-}
-
 WAIT=0
 while [ "$WAIT" -lt 900 ]; do
-	if proxy_ok; then
+	if proxy_204; then
 		log "Proxy is working (after ${WAIT}s)"
 		break
 	fi

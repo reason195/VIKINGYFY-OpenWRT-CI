@@ -51,20 +51,15 @@ chmod 644 "$DIR/60-fallback.conf"
 
 # custom_fakeip_filter 自愈（防断网修复项）：订阅源/规则源/DDNS 等域名必须返回真实 IP。
 # 若列表文件被误删、uci 标志被改回 0（本机无任何 OpenClash 操作会动它们，此为双保险），
-# 每次启动时恢复。注意：内容与 Files/etc/openclash/custom/openclash_custom_fake_filter.list 保持一致。
+# 每次启动时恢复。注意：列表烤在 /rom，这里直接从 /rom 恢复，避免内嵌第二份副本。
 uci -q get openclash.config.custom_fakeip_filter | grep -q '^1$' || {
   uci set openclash.config.custom_fakeip_filter='1'
   uci commit openclash 2>/dev/null
 }
-[ -s /etc/openclash/custom/openclash_custom_fake_filter.list ] || cat > /etc/openclash/custom/openclash_custom_fake_filter.list <<'EOF'
-# OpenClash custom_fakeip_filter 域名列表（rc.local 自愈重建，与 Files/etc/openclash/custom/ 保持一致）
-+.aisaka-taiga.com
-+.duckdns.org
-+.github.com
-+.githubusercontent.com
-+.githubassets.com
-+.jsdelivr.net
-EOF
+[ -s /etc/openclash/custom/openclash_custom_fake_filter.list ] || {
+  mkdir -p /etc/openclash/custom 2>/dev/null
+  cp /rom/etc/openclash/custom/openclash_custom_fake_filter.list /etc/openclash/custom/openclash_custom_fake_filter.list 2>/dev/null
+}
 chmod 644 /etc/openclash/custom/openclash_custom_fake_filter.list 2>/dev/null
 
 # Let's Encrypt 证书后台自愈（首次开机即尝试签发，缺失时由每日 cron 重试）
@@ -74,7 +69,7 @@ chmod 644 /etc/openclash/custom/openclash_custom_fake_filter.list 2>/dev/null
 # （脚本自检标记 /etc/.openclash-bootstrap-done，仅首启执行；失败下次开机重试）
 ( sleep 30; /usr/share/buffy/first_boot_download.sh >/dev/null 2>&1 ) &
 
-# 开机自检：等 OpenClash 核心 + 代理链路 204 确认；失败写日志/推 ntfy 告警（防"看似启动实际未接管流量"）
+# 开机自检：等 OpenClash 核心 + 代理链路 204 确认；失败写日志/推 Telegram 告警（防"看似启动实际未接管流量"）
 # （脚本内部有 flock 防重入；每 boot 一次，成功只更新时间戳不打扰）
 ( sleep 120; /usr/share/buffy/boot_selfcheck.sh >/dev/null 2>&1 ) &
 

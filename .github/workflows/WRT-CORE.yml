@@ -54,6 +54,8 @@ env:
   PPPOE_USERNAME: ${{secrets.PPPOE_USERNAME}}
   PPPOE_PASSWORD: ${{secrets.PPPOE_PASSWORD}}
   ROUTER_ROOT_PASSWORD: ${{secrets.ROUTER_ROOT_PASSWORD}}
+  TELEGRAM_BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
+  TELEGRAM_CHAT_ID: ${{secrets.TELEGRAM_CHAT_ID}}
   WRT_CONFIG: ${{inputs.WRT_CONFIG}}
   WRT_THEME: ${{inputs.WRT_THEME}}
   WRT_NAME: ${{inputs.WRT_NAME}}
@@ -308,7 +310,7 @@ jobs:
             平台：${{env.WRT_TARGET}}
 
             登录地址：${{env.WRT_IP}}
-            登录密码：${{env.WRT_PW}}
+            登录密码：由 GitHub Secret 注入（不对外公开）
 
             ${{env.WRT_WIFI_INFO}}
 

@@ -2,27 +2,17 @@
 # cert_check.sh - Let's Encrypt 证书健康检查与失败告警
 # 每日运行（cron 20 0 * * *）：
 #   - 证书缺失：尝试签发；连续失败 >=3 次推送告警
-#   - 证书 <14 天：尝试续期；续期失败推送告警
-# 告警通道：ntfy.sh（手机 App / 网页可订阅）。改 NTFY 变量即可切换 Bark / ServerChan 等。
+#   - 证书临期（<=14 天）：尝试续期；续期失败推送告警
+# 告警通道：Telegram（token/chat_id 由构建 Secret 注入，见 /etc/buffy-notify.conf）。
+
+. /usr/share/buffy/lib-buffy.sh
 
 DOMAIN="reason195.duckdns.org"
 LEAF="/etc/acme/${DOMAIN}_ecc/${DOMAIN}.cer"
 FULLCHAIN="/etc/ssl/acme/${DOMAIN}.fullchain.crt"
 KEY="/etc/ssl/acme/${DOMAIN}.key"
-NTFY="https://ntfy.sh/buffy-reason195-cert"
 FAIL_CNT_FILE="/tmp/acme_fail_count"
-
-notify() { # $1=标题 $2=正文
-	curl -fsS -m 10 -H "Title: $1" -H "Priority: high" -d "$2" "$NTFY" >/dev/null 2>&1
-}
-
-days_left() { # $1=cert path, echo 剩余天数
-	END=$(openssl x509 -enddate -noout -in "$1" 2>/dev/null | cut -d= -f2- | sed 's/  */ /g; s/ GMT//')
-	[ -z "$END" ] && { echo 0; return; }
-	EPOCH=$(date -u -D "%b %e %T %Y" -d "$END" +%s 2>/dev/null)
-	[ -z "$EPOCH" ] && { echo 0; return; }
-	echo $(( (EPOCH - $(date +%s)) / 86400 ))
-}
+RENEW_WINDOW=1209600   # 14 天（秒）
 
 mkdir -p /etc/ssl/acme 2>/dev/null
 
@@ -47,15 +37,13 @@ if [ ! -f "$LEAF" ]; then
 	exit 0
 fi
 
-# 已有证书：检查剩余天数，临期则尝试续期
-LEFT=$(days_left "$LEAF")
-if [ "$LEFT" -lt 14 ]; then
+# 已有证书：临期（<=14 天）则尝试续期
+if cert_expires_within "$LEAF" "$RENEW_WINDOW"; then
 	/etc/init.d/acme renew >/tmp/acme_renew.log 2>&1
-	LEFT2=$(days_left "$LEAF")
-	if [ "$LEFT2" -lt 14 ]; then
-		notify "LE证书即将过期" "$DOMAIN 证书剩余 ${LEFT2} 天，自动续期失败。详情见 /tmp/acme_renew.log。"
+	if cert_expires_within "$LEAF" "$RENEW_WINDOW"; then
+		notify "LE证书即将过期" "$DOMAIN 证书剩余 <=14 天，自动续期失败。详情见 /tmp/acme_renew.log。"
 	fi
 else
-	echo "cert_check: $DOMAIN 证书剩余 $LEFT 天，状态正常。"
+	echo "cert_check: $DOMAIN 证书有效（剩余 >14 天），状态正常。"
 fi
 exit 0

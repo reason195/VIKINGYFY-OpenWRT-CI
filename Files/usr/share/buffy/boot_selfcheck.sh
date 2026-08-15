@@ -5,22 +5,16 @@
 # boot_selfcheck.sh - 开机自检（每 boot 一次，rc.local 延迟拉起）
 # 目的：确认 OpenClash 核心进程 + 代理链路(204) 真的可用，避免"看似启动、实际未接管流量"的静默故障。
 # 成功：更新 /tmp/.boot-selfcheck-ok 时间戳，不打扰。
-# 失败：写 /tmp/boot_selfcheck.log 并推 ntfy 告警（同一次开机内去重，下次开机 /tmp 清空自动重置）。
+# 失败：写 /tmp/boot_selfcheck.log 并推 Telegram 告警（同一次开机内去重，下次开机 /tmp 清空自动重置）。
 # 日志：/tmp/boot_selfcheck.log
 
 LOG="/tmp/boot_selfcheck.log"
-NTFY="https://ntfy.sh/buffy-reason195-router"
 MARK_OK="/tmp/.boot-selfcheck-ok"
 MARK_FAIL="/tmp/.boot-selfcheck-fail"
 LOCK="/tmp/.boot-selfcheck.lock"
 
-log() {
-	echo "$(date '+%F %T') $*" >> "$LOG"
-}
-
-notify() { # $1=标题 $2=正文
-	curl -fsS -m 10 -H "Title: $1" -H "Priority: high" -d "$2" "$NTFY" >/dev/null 2>&1
-}
+# 公共函数（log/notify/openclash_ready/proxy_204 等）
+. /usr/share/buffy/lib-buffy.sh
 
 # 防并发（rc.local 可能重复拉起）
 exec 9>"$LOCK"
@@ -52,18 +46,12 @@ else
 fi
 
 # ---- 2. 核心进程 + external-controller 就绪（最长 5 分钟） ----
-openclash_ready() {
-	[ -n "$(pidof clash 2>/dev/null)" ] || return 1
-	code=$(curl -m 3 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${CN_PORT}/version" 2>/dev/null)
-	[ -n "$code" ] && [ "$code" != "000" ]
-}
-
 WAIT=0
-while [ "$WAIT" -lt 300 ] && ! openclash_ready; do
+while [ "$WAIT" -lt 300 ] && ! openclash_ready "$CN_PORT"; do
 	sleep 10
 	WAIT=$((WAIT + 10))
 done
-if openclash_ready; then
+if openclash_ready "$CN_PORT"; then
 	log "controller ready (after ${WAIT}s)"
 else
 	log "ERROR: OpenClash 核心/控制器在 ${WAIT}s 内未就绪"
@@ -71,15 +59,6 @@ else
 fi
 
 # ---- 3. 代理链路 204（端到端：路由器自身流量经 clash；兜底显式代理端口） ----
-proxy_204() {
-	[ "$(curl -m 10 -s -o /dev/null -w '%{http_code}' 'https://www.google.com/generate_204' 2>/dev/null)" = "204" ] && return 0
-	[ "$(curl -m 10 -s -o /dev/null -w '%{http_code}' 'https://www.gstatic.com/generate_204' 2>/dev/null)" = "204" ] && return 0
-	for p in 7890 7891 7893; do
-		[ "$(curl -m 8 -s -o /dev/null -w '%{http_code}' -x "http://127.0.0.1:$p" 'https://www.google.com/generate_204' 2>/dev/null)" = "204" ] && return 0
-	done
-	return 1
-}
-
 if [ "$FAIL" -eq 0 ]; then
 	WAIT=0
 	while [ "$WAIT" -lt 300 ] && ! proxy_204; do

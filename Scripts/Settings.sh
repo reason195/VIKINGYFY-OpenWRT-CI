@@ -81,16 +81,37 @@ if [ -d "$GITHUB_WORKSPACE/Files" ]; then
 	mkdir -p ./files
 	cp -rf $GITHUB_WORKSPACE/Files/. ./files/
 	#敏感文件权限修正（git 只保留可执行位，需恢复 0600）
-	chmod 600 ./files/etc/shadow ./files/etc/ppp/chap-secrets 2>/dev/null
+	chmod 600 ./files/etc/shadow ./files/etc/ppp/chap-secrets ./files/etc/buffy-notify.conf 2>/dev/null
 	chmod 600 ./files/etc/dropbear/*_host_key 2>/dev/null
 fi
 
 #==== 敏感配置注入（GitHub Secrets，占位符见 Files/ 内 @@XXX@@）====
 #注：未设置的 secret 会直接中断构建，避免产出带占位符的坏固件
 inject_secret() {
-	local PLACEHOLDER="$1" VALUE="$2"
-	[ -n "$VALUE" ] || { echo "ERROR: 缺少必需的 GitHub Secret: $PLACEHOLDER（请在仓库 Settings → Secrets 中配置）"; exit 1; }
+	local PLACEHOLDER="$1" VALUE="$2" REQUIRED="${3:-1}"
 	# 用 python3 做字面替换（无正则/转义陷阱，密码可含任意特殊字符）
+	if [ -z "$VALUE" ] && [ "$REQUIRED" = "1" ]; then
+		echo "ERROR: 缺少必需的 GitHub Secret: $PLACEHOLDER（请在仓库 Settings → Secrets 中配置）"
+		exit 1
+	fi
+	if [ -z "$VALUE" ]; then
+		echo "WARN: 未配置可选 Secret $PLACEHOLDER，占位符置空（相关功能静默跳过）"
+		PLACEHOLDER="$PLACEHOLDER" python3 - <<'PYEOF'
+import os, pathlib
+ph = os.environ["PLACEHOLDER"]
+for p in pathlib.Path("./files").rglob("*"):
+    if not p.is_file():
+        continue
+    try:
+        s = p.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        continue
+    if ("@@" + ph + "@@") in s:
+        p.write_text(s.replace("@@" + ph + "@@", ""), encoding="utf-8")
+        print(f"blanked {ph}")
+PYEOF
+		return 0
+	fi
 	PLACEHOLDER="$PLACEHOLDER" VALUE="$VALUE" python3 - <<'PYEOF'
 import os, pathlib
 ph = os.environ["PLACEHOLDER"]
@@ -113,6 +134,9 @@ inject_secret "PPPOE_PASSWORD" "$PPPOE_PASSWORD"
 inject_secret "DDNS_TOKEN" "$DDNS_TOKEN"
 inject_secret "HP_ADDRESS" "$HP_ADDRESS"
 inject_secret "HP_UUID" "$HP_UUID"
+# 告警通道（可选）：缺失时占位符置空、路由器侧静默跳过，不阻断构建
+inject_secret "TELEGRAM_BOT_TOKEN" "$TELEGRAM_BOT_TOKEN" 0
+inject_secret "TELEGRAM_CHAT_ID" "$TELEGRAM_CHAT_ID" 0
 
 #root 密码：生成 crypt 哈希写入 shadow（与 OpenWrt 默认 $5$ 格式一致）
 if [ -n "$ROUTER_ROOT_PASSWORD" ]; then

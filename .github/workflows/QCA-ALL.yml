@@ -56,6 +56,7 @@ jobs:
         if: github.event_name == 'schedule' || github.event.inputs.CHECK_ONLY == 'true'
         continue-on-error: true
         run: |
+          # 本项目仅构建 jdcloud_re-cs-07（IPQ60XX-WIFI-NO），与下方 config job 保持一致
           LAST_TAG=$(gh release list --limit 30 --json tagName -q '.[].tagName' | grep '^IPQ60XX-WIFI-NO-VIKINGYFY-main-' | head -n 1)
           if [ -n "$LAST_TAG" ]; then
             echo "sha=$(gh release view "$LAST_TAG" --json body -q .body | grep -oP '(?<=提交：)[0-9a-f]+' | head -n 1)" >> $GITHUB_OUTPUT
@@ -97,23 +98,17 @@ jobs:
           fi
 
   config:
-    name: ${{matrix.CONFIG}}
+    name: IPQ60XX-WIFI-NO
     needs: check
     if: (github.event_name == 'workflow_dispatch' && github.event.inputs.CHECK_ONLY != 'true') || (github.event_name != 'workflow_dispatch' && needs.check.outputs.skip != 'true')
-    strategy:
-      fail-fast: false
-      matrix:
-        CONFIG: [IPQ60XX-WIFI-NO]
-        SOURCE: [VIKINGYFY/immortalwrt]
-        BRANCH: [main]
 
     #调用公用编译核心WRT-CORE.yml
     uses: ./.github/workflows/WRT-CORE.yml
     #继承仓库 secrets（构建时注入敏感配置）
     secrets: inherit
     with:
-      #编译配置
-      WRT_CONFIG: ${{matrix.CONFIG}}
+      #编译配置（本项目仅构建 jdcloud_re-cs-07）
+      WRT_CONFIG: IPQ60XX-WIFI-NO
       #默认主题
       WRT_THEME: bootstrap
       #默认主机名
@@ -127,11 +122,11 @@ jobs:
       #默认密码，仅作提示，修改无用
       WRT_PW: 无
       #源码链接
-      WRT_REPO: https://github.com/${{matrix.SOURCE}}.git
+      WRT_REPO: https://github.com/VIKINGYFY/immortalwrt.git
       #源码分支
-      WRT_BRANCH: ${{matrix.BRANCH}}
+      WRT_BRANCH: main
       #源码名称
-      WRT_SOURCE: ${{matrix.SOURCE}}
+      WRT_SOURCE: VIKINGYFY/immortalwrt
       #插件调整
       WRT_PACKAGE: ${{inputs.PACKAGE}}
       #仅输出配置文件

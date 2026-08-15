@@ -56,9 +56,26 @@ MEDIATEK系列、QUALCOMMAX系列、ROCKCHIP系列、X86系列。
 
 workflows——自定义CI配置
 
-Scripts——自定义脚本
+Scripts——自定义脚本（构建期脚本与校验工具，不会编译进固件）
 
 Config——自定义配置
+
+Files——路由器根文件系统覆盖层（仅此目录的内容会被拷入固件 rootfs）
+
+# 刷机校验脚本
+
+`Scripts/verify_flash.py` 用于校验已刷入路由器的固件与本仓库 `Files/` 的一致性（含 secret 脱敏比对）：
+
+- 逐字节比对 `Files/` 与路由器 `/rom`（只读出厂层）；含 `@@SECRET@@` 占位符的文件做脱敏比对；shadow/openssl 等构建期与包默认合并的文件按包含关系比对。
+- 抽查 OpenClash 核心/规则集/DNS/防火墙等运行时状态，并提示 `/etc` 与 `/rom` 的运行时漂移。
+- 依赖 paramiko，仅本地运行，**不会被编译进固件**。
+
+```bash
+pip install paramiko
+python3 Scripts/verify_flash.py                              # 默认 192.168.1.1 root/root
+python3 Scripts/verify_flash.py --host 10.0.0.1 --user admin --password xxxx
+ROUTER_HOST=192.168.1.1 ROUTER_PASSWORD=root python3 Scripts/verify_flash.py
+```
 
 #
 [![Stargazers over time](https://starchart.cc/VIKINGYFY/OpenWRT-CI.svg?variant=adaptive)](https://starchart.cc/VIKINGYFY/OpenWRT-CI)

@@ -6,10 +6,9 @@
 # 检查：WAN 连通性(IPv4/IPv6) / DNS 解析 / DDNS 域名 / Let's Encrypt 证书 /
 #       dnsmasq 备用上游 / 防火墙 IPv6 放行 + wan forward=DROP / 硬件流量卸载。
 # 用法：手动 /usr/share/buffy/health_check.sh，或每日 cron（见 /etc/crontabs/root）。
-# 任一 FAIL：退出码非 0 并推 ntfy 告警；日志：/tmp/health_check.log
+# 任一 FAIL：退出码非 0 并推 Telegram 告警；日志：/tmp/health_check.log
 
 LOG="/tmp/health_check.log"
-NTFY="https://ntfy.sh/buffy-reason195-router"
 DOMAIN="reason195.duckdns.org"
 LEAF="/etc/acme/${DOMAIN}_ecc/${DOMAIN}.cer"
 
@@ -17,31 +16,12 @@ PASS=0
 FAIL=0
 REPORT=""
 
-log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+# 公共函数（log/notify/resolve/cert_expires_within 等）
+. /usr/share/buffy/lib-buffy.sh
 
 ok()  { PASS=$((PASS + 1)); REPORT="${REPORT}[OK]   $1\n"; log "[OK]   $1"; echo "[OK]   $1"; }
 bad() { FAIL=$((FAIL + 1)); REPORT="${REPORT}[FAIL] $1\n"; log "[FAIL] $1"; echo "[FAIL] $1"; }
 warn(){ REPORT="${REPORT}[WARN] $1\n"; log "[WARN] $1"; echo "[WARN] $1"; }
-
-notify() { curl -fsS -m 10 -H "Title: $1" -H "Priority: high" -d "$2" "$NTFY" >/dev/null 2>&1; }
-
-# 解析域名：nslookup 优先，回退 ping 触发系统解析
-resolve() {
-	if command -v nslookup >/dev/null 2>&1; then
-		nslookup "$1" ${2:-} >/dev/null 2>&1
-	else
-		ping -c 1 -W 3 "$1" >/dev/null 2>&1
-	fi
-}
-
-# 证书剩余天数（与 cert_check.sh 同法）
-days_left() {
-	END=$(openssl x509 -enddate -noout -in "$1" 2>/dev/null | cut -d= -f2- | sed 's/  */ /g; s/ GMT//')
-	[ -z "$END" ] && { echo 0; return; }
-	EPOCH=$(date -u -D "%b %e %T %Y" -d "$END" +%s 2>/dev/null)
-	[ -z "$EPOCH" ] && { echo 0; return; }
-	echo $(( (EPOCH - $(date +%s)) / 86400 ))
-}
 
 log "=== health_check: start ==="
 
@@ -85,6 +65,23 @@ else
 	warn "公网 IPv6 不可达（源:${WAN6:-无全局地址}）"
 fi
 
+# LAN 客户端 IPv6 出网：用 br-lan 全局地址做源 ping 外部目标。局域网设备走的是
+# "default from <委托前缀>" 源路由，与路由器自身 WAN 源路由不同——单独验证避免漏报。
+LAN6=""
+for _dev in br-lan lan; do
+	LAN6=$(ip -6 addr show dev "$_dev" scope global 2>/dev/null | awk '/inet6/{print $2; exit}' | cut -d/ -f1)
+	[ -n "$LAN6" ] && break
+done
+if [ -z "$LAN6" ]; then
+	warn "无 LAN 全局 IPv6 地址，跳过客户端出网检测"
+elif ping -6 -c 2 -W 3 -I "$LAN6" 2400:3200::1 >/dev/null 2>&1; then
+	ok "LAN 客户端 IPv6 出网可达 (2400:3200::1, 源 ${LAN6%%:*})"
+elif ping -6 -c 2 -W 3 -I "$LAN6" 2001:4860:4860::8888 >/dev/null 2>&1; then
+	ok "LAN 客户端 IPv6 出网可达 (2001:4860:4860::8888, 源 ${LAN6%%:*})"
+else
+	bad "LAN 客户端 IPv6 出网不可达（源 ${LAN6%%:*}）"
+fi
+
 if resolve www.baidu.com 223.5.5.5; then
 	ok "DNS 解析正常 (经 223.5.5.5)"
 else
@@ -99,11 +96,10 @@ else
 fi
 
 if [ -f "$LEAF" ]; then
-	DAYS=$(days_left "$LEAF")
-	if [ "$DAYS" -gt 14 ]; then
-		ok "LE 证书有效（剩余 ${DAYS} 天）"
+	if cert_expires_within "$LEAF" 1209600; then
+		bad "LE 证书临期/过期（剩余 <=14 天）"
 	else
-		bad "LE 证书临期/过期（剩余 ${DAYS} 天）"
+		ok "LE 证书有效（剩余 >14 天）"
 	fi
 else
 	bad "LE 证书缺失 ($LEAF)"

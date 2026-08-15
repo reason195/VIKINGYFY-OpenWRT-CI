@@ -61,12 +61,35 @@ uci set openclash.config.disable_quic_go_gso='1'
 uci -q delete openclash.config.default_dashboard
 uci set openclash.config.default_dashboard='zashboard'
 uci -q delete openclash.config.dashboard_password
-uci set openclash.config.dashboard_password='TauBuwn7'
-# clash API / dashboard 认证（沿用现有凭据；先清空再添加，保证幂等不重复）
+
+# 控制台/API 凭据：首启随机生成，避免固定明文烤进 /rom（可被从发布镜像提取）。
+# 生成结果写 /etc/openclash-credentials.txt 便于查询；每次刷机/重置都会重新生成。
+rand_hex() {
+	if V=$(openssl rand -hex 12 2>/dev/null) && [ -n "$V" ]; then
+		echo "$V"
+	elif V=$(od -An -N12 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n') && [ -n "$V" ]; then
+		echo "$V"
+	else
+		echo "$(date +%s)$$"
+	fi
+}
+DASH_PW="$(rand_hex)"
+API_USER="clash"
+API_PW="$(rand_hex)"
+uci set openclash.config.dashboard_password="$DASH_PW"
+
+# clash API / dashboard 认证（先清空再添加，保证幂等不重复）
 while uci -q delete openclash.@authentication[0]; do :; done
 uci add openclash authentication >/dev/null
 uci set openclash.@authentication[-1].enabled='1'
-uci set openclash.@authentication[-1].username='Clash'
-uci set openclash.@authentication[-1].password='suH9w0lB'
+uci set openclash.@authentication[-1].username="$API_USER"
+uci set openclash.@authentication[-1].password="$API_PW"
+cat > /etc/openclash-credentials.txt <<EOF
+# OpenClash 控制台/API 凭据（首启随机生成，请妥善保存；重刷/重置会重新生成）
+dashboard_password: $DASH_PW
+api_username: $API_USER
+api_password: $API_PW
+EOF
+chmod 600 /etc/openclash-credentials.txt
 uci commit openclash
 exit 0
