@@ -82,7 +82,6 @@ if [ -d "$GITHUB_WORKSPACE/Files" ]; then
 	cp -rf $GITHUB_WORKSPACE/Files/. ./files/
 	#敏感文件权限修正（git 只保留可执行位，需恢复 0600）
 	chmod 600 ./files/etc/shadow ./files/etc/ppp/chap-secrets ./files/etc/buffy-notify.conf 2>/dev/null
-	chmod 600 ./files/etc/dropbear/*_host_key 2>/dev/null
 fi
 
 #==== 敏感配置注入（GitHub Secrets，占位符见 Files/ 内 @@XXX@@）====
@@ -137,6 +136,8 @@ inject_secret "HP_UUID" "$HP_UUID"
 # 告警通道（可选）：缺失时占位符置空、路由器侧静默跳过，不阻断构建
 inject_secret "TELEGRAM_BOT_TOKEN" "$TELEGRAM_BOT_TOKEN" 0
 inject_secret "TELEGRAM_CHAT_ID" "$TELEGRAM_CHAT_ID" 0
+# sing-box 入站密钥（可选）：缺失时置空，Shadowsocks 入站失效（不再烧入明文密钥）
+inject_secret "SINGBOX_SS_PASSWORD" "$SINGBOX_SS_PASSWORD" 0
 
 #root 密码：生成 crypt 哈希写入 shadow（与 OpenWrt 默认 $5$ 格式一致）
 if [ -n "$ROUTER_ROOT_PASSWORD" ]; then

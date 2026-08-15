@@ -29,33 +29,28 @@ log "=== first_boot_download: start ==="
 
 # ---- 1. 等待 OpenClash 启动完成（核心进程 + 控制端口就绪），最长 10 分钟 ----
 WAIT=0
-while [ "$WAIT" -lt 600 ]; do
-	if openclash_ready; then
-		log "OpenClash is ready (after ${WAIT}s)"
-		break
-	fi
+while [ "$WAIT" -lt 600 ] && ! openclash_ready; do
 	sleep 10
 	WAIT=$((WAIT + 10))
 done
-if [ "$WAIT" -ge 600 ]; then
-	log "ERROR: OpenClash not ready within 600s, give up and retry on next boot"
+if ! openclash_ready; then
+	log "ERROR: OpenClash not ready within ${WAIT}s, give up and retry on next boot"
 	exit 1
 fi
+log "OpenClash is ready (after ${WAIT}s)"
 
 # ---- 2. 等待科学上网可用（端到端：直连经 clash 分流 + 兜底显式代理端口），最长 15 分钟 ----
 WAIT=0
-while [ "$WAIT" -lt 900 ]; do
-	if proxy_204; then
-		log "Proxy is working (after ${WAIT}s)"
-		break
-	fi
+while [ "$WAIT" -lt 900 ] && ! proxy_204; do
 	sleep 15
 	WAIT=$((WAIT + 15))
 done
-if [ "$WAIT" -ge 900 ]; then
+if ! proxy_204; then
 	# GEO 走 jsdelivr 镜像、白名单走 ispip.clang.cn，大陆直连可达；
 	# 面板走 codeload.github.com（需代理）。代理超时仍尝试全部下载（失败下次开机重试）
-	log "WARN: proxy not reachable within 900s, still trying downloads"
+	log "WARN: proxy not reachable within ${WAIT}s, still trying downloads"
+else
+	log "Proxy is working (after ${WAIT}s)"
 fi
 
 # ---- 3. 更新 GEO 数据库（GeoIP / GeoSite / ASN / Country） ----

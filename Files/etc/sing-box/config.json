@@ -18,7 +18,7 @@
       "listen_port": 8080,
       "network": "tcp",
       "method": "2022-blake3-aes-128-gcm",
-      "password": "Gn1JUS14bLUHgv1cWDDp4A==",
+      "password": "@@SINGBOX_SS_PASSWORD@@",
       "multiplex": {
         "enabled": true,
         "padding": true

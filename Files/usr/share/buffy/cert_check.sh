@@ -29,11 +29,20 @@ if [ ! -f "$LEAF" ]; then
 		exit 1
 	fi
 	rm -f $FAIL_CNT_FILE
-	# 签发成功：切换 uhttpd 到 LE 证书
-	uci set uhttpd.main.cert="$FULLCHAIN"
-	uci set uhttpd.main.key="$KEY"
-	uci commit uhttpd
-	/etc/init.d/uhttpd restart >/dev/null 2>&1
+	# 签发成功：切换 uhttpd 到 LE 证书。优先用 acme 安装到 /etc/ssl/acme 的拷贝，
+	# 缺失时回退到 acme 输出目录（fullchain.cer + key），两者都不存在则不切换避免 HTTPS 挂死。
+	if [ ! -f "$FULLCHAIN" ] || [ ! -f "$KEY" ]; then
+		FULLCHAIN="/etc/acme/${DOMAIN}_ecc/fullchain.cer"
+		KEY="/etc/acme/${DOMAIN}_ecc/${DOMAIN}.key"
+	fi
+	if [ -f "$FULLCHAIN" ] && [ -f "$KEY" ]; then
+		uci set uhttpd.main.cert="$FULLCHAIN"
+		uci set uhttpd.main.key="$KEY"
+		uci commit uhttpd
+		/etc/init.d/uhttpd restart >/dev/null 2>&1
+	else
+		echo "cert_check: 证书文件缺失（$FULLCHAIN / $KEY），未切换 uhttpd" >&2
+	fi
 	notify "LE证书已签发" "$DOMAIN 已获取 Let's Encrypt 证书并启用 HTTPS（有效期 90 天，每日自动续期）。"
 	exit 0
 fi

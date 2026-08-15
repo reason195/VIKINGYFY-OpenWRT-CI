@@ -36,12 +36,8 @@ fi
 # dnsmasq 备用 DNS conf（/tmp 重启即清，每次启动重建；OpenClash 看门狗不管理此目录）
 # 注意：uci show dhcp 对匿名 dnsmasq section 打印为 dhcp.@dnsmasq[0]=dnsmasq，没有 .type='dnsmasq' 行，
 # 旧写法提取不到 cfgid 会把 conf 写到 /tmp/dnsmasq..d 导致备用上游从不生效。
-# 改为与 OpenClash init 同法：从 dhcp.@dnsmasq[0] 取 cfgid，再读生成的 dnsmasq conf 里的 conf-dir=。
-DEFAULT_DNSMASQ_CFGID=$(uci -q show 'dhcp.@dnsmasq[0]' | awk 'NR==1 {split($0, conf, /[.=]/); print conf[2]}')
+# 直接读 dnsmasq 启动时生成的 conf 里的 conf-dir=，不猜测匿名 section 的 cfgid。
 DIR=""
-[ -n "$DEFAULT_DNSMASQ_CFGID" ] && [ -f "/tmp/etc/dnsmasq.conf.$DEFAULT_DNSMASQ_CFGID" ] && \
-	DIR=$(awk -F '=' '/^conf-dir=/ {print $2}' "/tmp/etc/dnsmasq.conf.$DEFAULT_DNSMASQ_CFGID")
-# 兜底：从任意已生成的 dnsmasq conf 读取
 [ -n "$DIR" ] || DIR=$(awk -F '=' '/^conf-dir=/ {print $2}' /tmp/etc/dnsmasq.conf.* 2>/dev/null | head -1)
 [ -n "$DIR" ] || DIR="/tmp/dnsmasq.d"
 mkdir -p "$DIR"

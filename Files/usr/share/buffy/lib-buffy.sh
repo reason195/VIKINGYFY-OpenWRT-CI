@@ -23,7 +23,11 @@ notify() { # $1=标题 $2=正文；ntfy 与 Telegram 双通道，均未配置则
 # 解析域名：解析出至少一个地址才算成功（busybox nslookup 失败也可能返回 0，故按输出判断）
 resolve() { # $1=域名 [$2=DNS 服务器]
 	if command -v nslookup >/dev/null 2>&1; then
-		nslookup "$1" "${2:-}" 2>/dev/null | grep -qE 'Address( [0-9]+)?: [0-9a-fA-F]'
+		if [ -n "$2" ]; then
+			nslookup "$1" "$2" 2>/dev/null | grep -qE 'Address( [0-9]+)?: [0-9a-fA-F]'
+		else
+			nslookup "$1" 2>/dev/null | grep -qE 'Address( [0-9]+)?: [0-9a-fA-F]'
+		fi
 	else
 		ping -c 1 -W 3 "$1" >/dev/null 2>&1
 	fi
