@@ -258,6 +258,14 @@ if "find-process-mode: 'always'" in s:
     print("find-process-mode set to off")
 else:
     print("WARN: 模板无 find-process-mode: 'always' 行，跳过（上游模板可能已改）")
+# url-test 锚点注入 tolerance: 50：默认 0 时节点延迟 1ms 之差即切换出口 IP，破坏
+# 会话一致性（流媒体风控/登录态掉线）；50ms 容差 = 新节点快 50ms 以上才切换。
+# 与 YYDS 新版 Pro v2.0.6 的默认取值一致（该版以 tolerance: 50 为标配）。
+if "BaseUT: &BaseUT {type: url-test," in s and "tolerance" not in s.split("BaseUT")[1][:120]:
+    s = s.replace("BaseUT: &BaseUT {type: url-test,", "BaseUT: &BaseUT {type: url-test, tolerance: 50,", 1)
+    print("url-test tolerance=50 injected")
+else:
+    print("WARN: BaseUT 锚点未匹配或已有 tolerance，跳过注入")
 open(p, "w", encoding="utf-8").write(s)
 print("sub URLs injected")
 PYEOF

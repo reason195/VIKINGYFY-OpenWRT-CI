@@ -48,6 +48,25 @@
 - **评估结论修正**：首轮评估的「DNS 劫持断链」为误报——测试时 OpenClash 处于手动停止状态，明文解析/污染 IP/无 fake-ip 均为停止态设计行为；运行态受控复测 fake-ip（198.18.0.9）、dnsmasq→7874 劫持、国外域名 AAAA 抑制全部正常。IPv6 泄漏担忧同理撤销。
 - **路由器应急**（即时生效）：zz- sysctl 部署（conntrack 131072、缓冲 4MB 实测就位）、samba4 停用、coremark cron 删除、find-process-mode 改 off 并重启验证 204 OK。BBR 与包精简待下次构建。
 
+# 变更记录（2026-08-17）：OpenClash url-test 组 tolerance 注入 + YYDS 新版评估
+
+## 一、url-test 策略组注入 tolerance: 50
+
+- **问题**：legacy 模板的 url-test 锚点（BaseUT）无 tolerance（默认 0），节点延迟 1ms 之差即切换出口 IP，破坏会话一致性（流媒体 IP 风控、网页登录态掉线）。
+- **修复**：`Handles.sh` 构建期对 BaseUT 锚点注入 `tolerance: 50`（新节点快 50ms 以上才切换；与 YYDS 新版 Pro v2.0.6 的标配取值一致），幂等防重复注入，模板变更 WARN 跳过。
+- **实机验证**：路由器注入后 `clash_meta -t` 校验通过、重启后 204 OK。
+
+## 二、YYDS 新版（Pro v2.0.6）评估结论：维持 legacy
+
+- **兼容性实测**：新版注入真实订阅后 `clash_meta -t` 校验通过，与当前 alpha 核心完全兼容。用户此前"起不来"的原因是新版 proxy-providers 为注释掉的示例行，需取消注释并替换 `YOUR_PRIMARY_URL`/`YOUR_BACKUP_URL`（旧版为中文占位符「优质订阅源地址」）。
+- **不迁移的原因**：新版 fake-ip-filter 丢失 `rule-set:China/Direct/Private`（仅 5 个固定域名），国内域名将落入 fake-ip、全部挤进 clash 用户态转发——相比 legacy 的「国内域名真实 IP → nft china_ip_route 内核直连 → NSS 硬件加速」是显著性能退步；另缺少欧盟策略组与 AppleCN/Download/抖快书/XPTV 等规则集。新版取向为软路由 TUN 场景。
+- **新版优点择优吸收**：其标配的 `tolerance: 50` 已按上节注入 legacy。
+
+## 三、BBR 本地安装验证：不可行
+
+- 实测 `apk add kmod-tcp-bbr` 失败：固件未配置任何软件源，且自编译内核（fork @1f96307）与官方源 kmod 的 vermagic 不匹配，装上也无法加载。
+- 正确路径为下次构建（GENERAL.txt 已含 kmod-tcp-bbr），刷入后 `sysctl -n net.ipv4.tcp_congestion_control` 应输出 bbr（sysctl 行已就位）。
+
 # 变更记录（2026-08-13）：开机噪音根治 + 开机自检/全机体检 + 硬件流卸载修复
 
 在上一轮验收基础上收尾四件事：根治 OpenClash 开机日志噪音、加开机自检与告警、加全机体检脚本、修复硬件流量卸载未默认开启。
