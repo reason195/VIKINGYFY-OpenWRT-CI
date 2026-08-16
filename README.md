@@ -51,9 +51,26 @@
 | `cert_check.sh` | 每日证书签发/续期，失败告警 |
 | `first_boot_download.sh` | 首启引导：更新 GEO/白名单/面板，幂等仅执行一次 |
 
+## 一键升级
+
+`Scripts/upgrade_firmware.py` 从 GitHub latest release 下载本设备的 sysupgrade 固件、校验 sha256 并刷入：
+
+```bash
+pip install paramiko
+python3 Scripts/upgrade_firmware.py                          # 默认 192.168.1.1 root/root，保留配置升级
+python3 Scripts/upgrade_firmware.py --dry-run                # 只下载+校验，不刷机
+python3 Scripts/upgrade_firmware.py --reset --yes            # 重置配置(sysupgrade -n)并跳过确认
+python3 Scripts/upgrade_firmware.py --no-verify              # 刷机后不等待重启、不自动复验
+```
+
+- sha256 以 GitHub 资产 `digest` 为准，本地 + 路由器侧双重校验，不一致即中止
+- 刷机前校验路由器 `board_name` 与固件设备段一致，防止刷错设备
+- 刷机后自动等待重启（按 uptime 判断确已重启）、等 OpenClash 开机自检完成后再运行 `verify_flash.py` 复验；`--no-verify` 跳过
+- 建议已安装并登录 `gh`（避免 GitHub 匿名 API 限流）
+
 ## 刷机校验
 
-刷机后可用 `Scripts/verify_flash.py` 校验路由器与本仓库 `Files/` 的一致性（含 secret 脱敏比对）：
+刷机后可用 `Scripts/verify_flash.py` 校验路由器与本仓库 `Files/` 的一致性（含 secret 脱敏比对与 uci-defaults 运行时效果）：
 
 ```bash
 pip install paramiko

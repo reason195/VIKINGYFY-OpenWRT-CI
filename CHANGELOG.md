@@ -67,6 +67,13 @@
 - 实测 `apk add kmod-tcp-bbr` 失败：固件未配置任何软件源，且自编译内核（fork @1f96307）与官方源 kmod 的 vermagic 不匹配，装上也无法加载。
 - 正确路径为下次构建（GENERAL.txt 已含 kmod-tcp-bbr），刷入后 `sysctl -n net.ipv4.tcp_congestion_control` 应输出 bbr（sysctl 行已就位）。
 
+## 四、工具链：一键升级 + uci-defaults 运行时校验 + 离线单测
+
+- **`Scripts/upgrade_firmware.py`（新增）**：一键从 GitHub latest release 下载本设备 sysupgrade 固件并刷入。sha256 三重校验（GitHub 资产 digest → 本地 → 路由器侧，任一不符即中止）；刷机前校验 `board_name` 防刷错设备；nohup 触发防 SSH 断连；刷机后按 uptime 下降确认真重启、等待开机自检（含静默模式跳过分支）再自动运行 `verify_flash.py` 复验。支持 `--dry-run` / `--reset`(sysupgrade -n) / `--tag` / `--no-verify`。
+- **`verify_flash.py` 增强**：新增第 2 节「uci-defaults 运行时效果」校验——第 1 节 SKIP 掉的 4 个首启消费脚本（dropbear 解绑 / uhttpd 强制 HTTPS / 防火墙卸载与 WAN v6 放行 / OpenClash 全量选项含 cron 时刻表与凭据一致性）现在有运行时断言，补上文件比对覆盖不到的盲区。
+- **`Tests/test_upgrade_firmware.py`（新增）**：18 例离线单测（mock GitHub API / SSH / 下载 / 时间），全部通过。
+- 已在 26.08.17-00.13.34 固件实测：30 项文件一致 + 4 项 uci-defaults 效果全绿。
+
 # 变更记录（2026-08-13）：开机噪音根治 + 开机自检/全机体检 + 硬件流卸载修复
 
 在上一轮验收基础上收尾四件事：根治 OpenClash 开机日志噪音、加开机自检与告警、加全机体检脚本、修复硬件流量卸载未默认开启。

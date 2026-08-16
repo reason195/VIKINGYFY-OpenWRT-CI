@@ -149,6 +149,28 @@ def run(cli, cmd, timeout=15):
         return "", f"EXEC-ERR: {ex}"
 
 
+def uci_dump(cli, config):
+    """解析 `uci show <config>` 输出为 key -> value（多值 list 项返回 list）。"""
+    out, _ = run(cli, f"uci show {config} 2>/dev/null", timeout=20)
+    d = {}
+    for line in out.splitlines():
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        vals = re.findall(r"'([^']*)'", v)
+        d[k] = vals if len(vals) > 1 else (vals[0] if vals else v)
+    return d
+
+
+def find_named_section(d, type_prefix, name):
+    """按 name 选项定位匿名段（如 firewall rule/zone），返回段 key（含索引）。"""
+    for k, v in d.items():
+        m = re.match(rf"^{re.escape(type_prefix)}\[(\d+)\]\.name$", k)
+        if m and v == name:
+            return f"{type_prefix}[{m.group(1)}]"
+    return None
+
+
 RUNTIME_CHECKS = [
     ("固件版本", "cat /etc/openwrt_release"),
     ("内核", "uname -a"),
@@ -161,6 +183,94 @@ RUNTIME_CHECKS = [
     ("uhttpd / DDNS", "uci show uhttpd 2>/dev/null | grep -E 'redirect_https|listen_https'; uci show ddns 2>/dev/null | grep -E 'ip_interface|enabled|lookup_host'"),
     ("运行时 crontab", "cat /etc/crontabs/root 2>/dev/null"),
 ]
+
+
+def check_uci_defaults(cli):
+    """校验 4 个首启即消费的 uci-defaults 脚本的运行时效果，返回 [(脚本, ok, 详情)]。"""
+    results = []
+
+    # 90-buffy-dropbear.sh：解绑 lan 接口，允许经 WAN(IPv6) SSH
+    d = uci_dump(cli, "dropbear")
+    bound = [k for k in d if "Interface" in k]
+    results.append(("90-buffy-dropbear.sh", not bound,
+                    "Interface/DirectInterface 已解绑" if not bound else f"仍存在接口绑定: {bound}"))
+
+    # 91-buffy-uhttpd.sh：LuCI 强制 HTTPS（redirect + 监听 443）
+    d = uci_dump(cli, "uhttpd")
+    rh = d.get("uhttpd.main.redirect_https")
+    lh = d.get("uhttpd.main.listen_https")
+    if not isinstance(lh, list):
+        lh = [lh]
+    ok = rh == "1" and "0.0.0.0:443" in lh and "[::]:443" in lh
+    results.append(("91-buffy-uhttpd.sh", ok,
+                    f"redirect_https={rh!r} listen_https={lh!r}"))
+
+    # 92-buffy-firewall.sh：硬件流卸载 + fullcone6 + wan forward=DROP + WAN v6 放行 SSH/LuCI
+    d = uci_dump(cli, "firewall")
+    fo = d.get("firewall.@defaults[0].flow_offloading")
+    foh = d.get("firewall.@defaults[0].flow_offloading_hw")
+    fc6 = d.get("firewall.@defaults[0].fullcone6")
+    wan_sec = find_named_section(d, "firewall.@zone", "wan")
+    wan_fwd = d.get(f"{wan_sec}.forward") if wan_sec else None
+    ssh_sec = find_named_section(d, "firewall.@rule", "Allow-WAN-SSH-v6")
+    luci_sec = find_named_section(d, "firewall.@rule", "Allow-WAN-LuCI-v6")
+    ssh_ok = bool(ssh_sec and d.get(f"{ssh_sec}.src") == "wan"
+                  and d.get(f"{ssh_sec}.family") == "ipv6" and d.get(f"{ssh_sec}.proto") == "tcp"
+                  and d.get(f"{ssh_sec}.dest_port") == "22" and d.get(f"{ssh_sec}.target") == "ACCEPT")
+    luci_dp = d.get(f"{luci_sec}.dest_port") if luci_sec else None
+    luci_ok = bool(luci_sec and d.get(f"{luci_sec}.src") == "wan"
+                   and d.get(f"{luci_sec}.family") == "ipv6" and d.get(f"{luci_sec}.proto") == "tcp"
+                   and luci_dp and set(luci_dp) == {"80", "443"}
+                   and d.get(f"{luci_sec}.target") == "ACCEPT")
+    ok = fo == "1" and foh == "1" and fc6 == "1" and wan_fwd == "DROP" and ssh_ok and luci_ok
+    results.append(("92-buffy-firewall.sh", ok,
+                    f"flow_offloading={fo} hw={foh} fullcone6={fc6} wan.forward={wan_fwd} "
+                    f"SSHv6={'✓' if ssh_ok else '✗'} LuCIv6={'✓' if luci_ok else '✗'}"))
+
+    # 93-buffy-openclash.sh：核心/规则/订阅/时刻表/凭据等运行时选项
+    d = uci_dump(cli, "openclash")
+    expected = {
+        "en_mode": "fake-ip", "operation_mode": "fake-ip", "redirect_dns": "1",
+        "enable_respect_rules": "1", "log_level": "error", "china_ip_route": "1",
+        "core_type": "Meta", "core_version": "linux-arm64",
+        "github_address_mod": "https://testingcf.jsdelivr.net/", "enable_geoip_dat": "1",
+        "enable_custom_domain_dns_server": "1", "custom_domain_dns_server": "223.5.5.5",
+        "custom_fakeip_filter": "1", "skip_proxy_address": "1",
+        "enable_meta_sniffer": "1", "enable_meta_sniffer_pure_ip": "1",
+        "geo_auto_update": "1", "geoip_auto_update": "1", "geosite_auto_update": "1",
+        "geoasn_auto_update": "1", "chnr_auto_update": "1",
+        "disable_quic_go_gso": "1", "default_dashboard": "zashboard",
+        "chnr_custom_url": "https://ispip.clang.cn/all_cn.txt",
+        "chnr6_custom_url": "https://ispip.clang.cn/all_cn_ipv6.txt",
+    }
+    for name, hour in (("geo", "0"), ("geosite", "2"), ("geoip", "1"), ("geoasn", "3"), ("chnr", "4")):
+        expected[f"{name}_update_day_time"] = hour
+        expected[f"{name}_update_week_time"] = "1"
+    mism = [f"{k}: 期望{v!r}≠实际{d.get('openclash.config.' + k)!r}"
+            for k, v in expected.items() if d.get("openclash.config." + k) != v]
+    dash_pw = d.get("openclash.config.dashboard_password")
+    api_sec = "openclash.@authentication[0]"
+    api_en = d.get(f"{api_sec}.enabled")
+    api_user = d.get(f"{api_sec}.username")
+    api_pw = d.get(f"{api_sec}.password")
+    if not dash_pw:
+        mism.append("dashboard_password: 为空（应首启随机生成）")
+    if api_en != "1" or api_user != "clash" or not api_pw:
+        mism.append(f"authentication: enabled={api_en!r} username={api_user!r} password空={not api_pw}")
+    creds, _ = run(cli, "cat /etc/openclash-credentials.txt 2>/dev/null", timeout=10)
+    if not creds:
+        mism.append("/etc/openclash-credentials.txt: 不存在")
+    else:
+        cred_dash = re.search(r"^dashboard_password: (\S+)$", creds, re.M)
+        cred_api = re.search(r"^api_password: (\S+)$", creds, re.M)
+        if not cred_dash or cred_dash.group(1) != dash_pw:
+            mism.append("credentials 与 uci dashboard_password 不一致")
+        if not cred_api or cred_api.group(1) != api_pw:
+            mism.append("credentials 与 uci api_password 不一致")
+    ok = not mism
+    results.append(("93-buffy-openclash.sh", ok, "全部选项一致" if ok else "; ".join(mism[:5])))
+
+    return results
 
 
 def main():
@@ -210,12 +320,18 @@ def main():
             if not status.startswith("OK"):
                 failures += 1
 
-    print("\n===== 2. 运行时状态抽查 =====")
+    print("\n===== 2. uci-defaults 运行时效果（首启已消费的脚本） =====")
+    for script, ok, detail in check_uci_defaults(cli):
+        print(f"{'✅' if ok else '❌'} [{script}] {detail}")
+        if not ok:
+            failures += 1
+
+    print("\n===== 3. 运行时状态抽查 =====")
     for label, cmd in RUNTIME_CHECKS:
         o, e = run(cli, cmd)
         print(f"--- {label}\n{o}" + (f"\n[stderr] {e}" if e else ""))
 
-    print("\n===== 3. /etc vs /rom（运行时漂移，仅提示） =====")
+    print("\n===== 4. /etc vs /rom（运行时漂移，仅提示） =====")
     for dirpath, _, files in os.walk(files_dir):
         for fn in files:
             rel = os.path.relpath(os.path.join(dirpath, fn), files_dir).replace(os.sep, "/")
@@ -234,9 +350,9 @@ def main():
 
     print("\n===== 汇总 =====")
     if failures:
-        print(f"❌ 固件一致性：{failures} 项不一致（详见第 1 节）")
+        print(f"❌ 固件一致性：{failures} 项不一致（详见第 1/2 节）")
         return 1
-    print("✅ 固件一致性：全部通过（secret 已脱敏比对，合并文件按包含关系比对）")
+    print("✅ 固件一致性：全部通过（Files/ 覆盖层 + uci-defaults 运行时效果）")
     return 0
 
 
