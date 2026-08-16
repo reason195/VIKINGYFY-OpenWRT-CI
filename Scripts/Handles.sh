@@ -251,6 +251,13 @@ s = open(p, encoding="utf-8").read()
 # YYDS 模板中的占位符为纯文本「优质订阅源地址」「备用订阅源地址」（见 proxy-providers 段）
 s = s.replace("优质订阅源地址", main)
 s = s.replace("备用订阅源地址", back)
+# find-process-mode 改 off：路由器场景 LAN 转发流量永远匹配不到本机进程，
+# always 模式对每个连接白查一次 /proc，纯 CPU 浪费（模板默认 'always'）
+if "find-process-mode: 'always'" in s:
+    s = s.replace("find-process-mode: 'always'", "find-process-mode: 'off'")
+    print("find-process-mode set to off")
+else:
+    print("WARN: 模板无 find-process-mode: 'always' 行，跳过（上游模板可能已改）")
 open(p, "w", encoding="utf-8").write(s)
 print("sub URLs injected")
 PYEOF

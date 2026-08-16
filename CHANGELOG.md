@@ -38,6 +38,16 @@
 - **修复**：`93-buffy-openclash.sh` 补齐 5 组时刻表选项（周一凌晨 0-4 点错峰，与 Files/etc/crontabs/root 烤入版一致），`add_cron` 即可自行生成正确行。
 - **实机验证**：设置选项并重启 OpenClash 后，add_cron 重新生成全部 5 行标准 5 字段任务，代理 204 恢复正常。
 
+## 六、性能优化落地（第二轮实机评估产出）
+
+- **sysctl 生效顺序修复**：`/etc/init.d/sysctl` 按字典序应用 `/etc/sysctl.d/*.conf`（字母 > 数字），qca-nss-ecm.conf（conntrack_max=65535）在 `99-` 之后应用、覆盖烤入的 131072（实机复现）。文件改名 `99-` → `zz-network-optimizations.conf` 保证最后应用。
+- **TCP 缓冲区上限 1MB → 4MB**：代理两段 TCP 均终结于路由器，单流吞吐上限 ≈ 缓冲/RTT，1MB 在 50ms RTT 下仅 ~160Mbps。
+- **BBR**：`GENERAL.txt` 增加 `kmod-tcp-bbr`，sysctl 末行启用（旧固件无模块时该行失败、不影响其余行，新固件自动生效）。
+- **find-process-mode: always → off**（`Handles.sh` 构建期注入 MihomoPro.yaml）：路由器场景 LAN 流量永远匹配不到本机进程，always 对每个连接白查一次 /proc。
+- **移除 coremark**（每日 4:00 跑分无意义）**与 luci-app-samba4**（零共享空转 ~30MB）。
+- **评估结论修正**：首轮评估的「DNS 劫持断链」为误报——测试时 OpenClash 处于手动停止状态，明文解析/污染 IP/无 fake-ip 均为停止态设计行为；运行态受控复测 fake-ip（198.18.0.9）、dnsmasq→7874 劫持、国外域名 AAAA 抑制全部正常。IPv6 泄漏担忧同理撤销。
+- **路由器应急**（即时生效）：zz- sysctl 部署（conntrack 131072、缓冲 4MB 实测就位）、samba4 停用、coremark cron 删除、find-process-mode 改 off 并重启验证 204 OK。BBR 与包精简待下次构建。
+
 # 变更记录（2026-08-13）：开机噪音根治 + 开机自检/全机体检 + 硬件流卸载修复
 
 在上一轮验收基础上收尾四件事：根治 OpenClash 开机日志噪音、加开机自检与告警、加全机体检脚本、修复硬件流量卸载未默认开启。
