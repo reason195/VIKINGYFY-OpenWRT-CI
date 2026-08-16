@@ -82,6 +82,8 @@ if [ -d "$GITHUB_WORKSPACE/Files" ]; then
 	cp -rf $GITHUB_WORKSPACE/Files/. ./files/
 	#敏感文件权限修正（git 只保留可执行位，需恢复 0600）
 	chmod 600 ./files/etc/shadow ./files/etc/ppp/chap-secrets ./files/etc/buffy-notify.conf 2>/dev/null
+	#buffy 脚本执行位兜底：cron 直接执行这些脚本，git 索引漏 644 会烤进固件导致每小时静默失败（rc=126 无告警）
+	chmod +x ./files/usr/share/buffy/*.sh 2>/dev/null
 fi
 
 #==== 敏感配置注入（GitHub Secrets，占位符见 Files/ 内 @@XXX@@）====

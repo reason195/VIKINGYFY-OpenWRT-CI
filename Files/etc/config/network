@@ -27,7 +27,9 @@ config interface 'wan'
 	option proto 'pppoe'
 	option username '@@PPPOE_USERNAME@@'
 	option password '@@PPPOE_PASSWORD@@'
-	option ipv6 'auto'
+	# '1' 只协商 IPv6CP；'auto' 会额外派生 wan_6 虚拟 dhcpv6 接口，与下方显式 wan6
+	# 两个客户端同链路同 DUID 冲突，wan_6 每秒翻动刷爆日志（实测 15 分钟 1682 条）。
+	option ipv6 '1'
 
 config interface 'wan6'
 	option device '@wan'

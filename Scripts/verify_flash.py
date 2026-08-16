@@ -12,10 +12,12 @@
 #
 # 比对逻辑：
 #   1. 固件一致性：把 Files/ 下每个文件与路由器 /rom（只读出厂层）比对。
-#      - 含 @@SECRET@@ 占位符的文件做脱敏比对（占位符匹配任意值，并检查无占位符泄漏）；
+#      - 含 @@SECRET@@ 占位符的文件做脱敏比对（占位符匹配任意值【含空注入】，并检查无占位符泄漏）；
 #      - 构建期会与包默认合并/追加的文件（shadow）按「本地内容须按序出现在路由器中」比对；
 #      - uci-defaults 脚本首启即被消费，跳过（改由运行时 uci 状态体现）；
-#      - 其余文件逐字节比对（CRLF/LF 归一化）。
+#      - 其余文件逐字节比对（CRLF/LF 归一化）；
+#      - git 索引为 100755 的文件额外校验路由器 /rom 侧执行位（Windows 工作区读不到真实
+#        权限位，故以 git 索引为准；曾因 644 烤入固件导致 proxy_watch cron 静默失败）。
 #   2. 运行时漂移：/etc 与 /rom 的差异仅作提示（openclash/apk 会改写运行时文件，属正常）。
 #   3. 关键运行时状态：OpenClash 核心/规则集/DNS/防火墙等抽查。
 #
@@ -24,6 +26,7 @@
 import argparse
 import os
 import re
+import subprocess
 import sys
 
 import paramiko
@@ -67,6 +70,18 @@ def router_bytes(sftp, path: str):
         return None
 
 
+def git_index_mode(files_dir: str, rel: str):
+    """读 git 索引记录的文件模式（Windows 工作区读不到真实权限位）；不在 git 仓库或未跟踪时返回 None。"""
+    try:
+        out = subprocess.run(
+            ["git", "-C", os.path.dirname(files_dir), "ls-files", "-s", "--", f"Files/{rel}"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout.strip()
+        return out.split()[0] if out else None
+    except Exception:
+        return None
+
+
 def mask_root_hash(line: str) -> str:
     """把 shadow root 行的密码哈希字段替换为固定 token（两侧同步，密码由 secret 注入，不可比对）。"""
     if line.startswith("root:"):
@@ -84,8 +99,8 @@ def line_subset(local_lines, router_lines) -> bool:
 
 
 def compare_secret(local_text: str, router_text: str):
-    """脱敏比对：占位符匹配任意值；额外检查路由器侧无 @@ 残留。"""
-    pat = "^" + SECRET_RE.sub(r".+?", re.escape(local_text)) + "$"
+    """脱敏比对：占位符匹配任意值（含空——可选 secret 未配置时构建期置空）；额外检查路由器侧无 @@ 残留。"""
+    pat = "^" + SECRET_RE.sub(r".*?", re.escape(local_text)) + "$"
     if re.search(pat, router_text, re.DOTALL):
         return "OK" if "@@" not in router_text else "FAIL(占位符泄漏)"
     return "FAIL(结构不一致)"
@@ -181,6 +196,13 @@ def main():
                 print(f"[SKIP] {rel}  (uci-defaults 首启已消费)")
                 continue
             status, detail = compare_file(sftp, files_dir, rel)
+            # 执行位校验：git 索引 755 的文件，路由器 /rom 侧也必须可执行
+            if status.startswith("OK") and git_index_mode(files_dir, rel) == "100755":
+                try:
+                    if not sftp.stat("/rom/" + rel).st_mode & 0o111:
+                        status, detail = "FAIL(无执行位)", "git 索引为 100755，但路由器 /rom 侧不可执行（cron 直接执行会 rc=126 静默失败）"
+                except IOError:
+                    pass  # /rom 无此文件，内容比对已报告
             mark = "✅" if status.startswith("OK") else "❌"
             print(f"{mark} [{status:<12}] {rel}")
             if detail:

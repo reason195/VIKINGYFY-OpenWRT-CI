@@ -1,3 +1,26 @@
+# 变更记录（2026-08-16）：实机验收两处固件 bug 修复 + 刷机校验工具增强
+
+针对最新 release（26.08.15-21.46.59）实机验收发现两处固件 bug 并修复：proxy_watch 自加入以来从未成功运行（缺执行位）；`ipv6 'auto'` 与显式 wan6 冲突导致 wan_6 接口每秒翻动。均已在仓库修复，并在路由器上应急修复验证通过。
+
+## 一、proxy_watch.sh 缺执行位（每小时代理探测自加入以来静默失败）
+
+- **现象**：cron `5 * * * *` 每次执行 rc=126（Permission denied），crond 无告警、`/tmp/proxy_watch.log` 从未产生——代理中断时唯一的小时级探测完全失效。
+- **根因**：git 索引中该文件为 100644（其余 buffy 脚本均 100755）；`Settings.sh` 的 `cp -rf` 原样烤入固件；`WRT-CORE.yml` Check Scripts 的 `chmod +x` 只作用于 maxdepth 3，buffy 脚本在深度 5 救不到。
+- **修复**：`git update-index --chmod=+x`（proxy_watch.sh 与 lib-buffy.sh 一并对齐 755）；`Settings.sh` 拷贝后对 `./files/usr/share/buffy/*.sh` 兜底 `chmod +x`。
+- **实机验证**：路由器 chmod +x 后直接执行 rc=0、`proxy 204 OK`、失败标记自动清除。
+
+## 二、wan `ipv6 'auto'` 与显式 wan6 冲突（wan_6 每秒翻动，1d855ec 引入的回归）
+
+- **现象**：pppoe wan 的 `ipv6 'auto'` 自动派生 wan_6 虚拟 dhcpv6 接口，与显式 wan6 形成两个 odhcp6c 同链路、同 DUID 冲突；wan_6 永久 pending 且每秒翻动（实测 15 分钟 1682 条日志），logread 环形缓冲被冲爆（只能回看约 3 分钟，掩盖其他故障痕迹），load ~2.1。IPv6 本身经显式 wan6 一直正常（GUA + /60 PD）。
+- **修复**：`Files/etc/config/network` wan 段改为 `option ipv6 '1'`——只协商 IPv6CP、不派生 wan_6，DHCPv6 继续由显式 wan6 负责。
+- **实机验证**：路由器 uci 同改并 reload 后 wan_6 消失、翻动停止、wan6 重新拿到 GUA + /60、load 从 2.1 回落至 ~1.4。
+
+## 三、verify_flash.py 两处修正
+
+- `compare_secret` 占位符匹配 `.+?` → `.*?`：可选 secret 未配置时构建期置空注入，空串无法匹配 `.+?`，导致 sing-box config.json 误报 FAIL（本次实发）。
+- 新增执行位校验：git 索引为 100755 的文件，路由器 /rom 侧必须可执行（Windows 工作区读不到真实权限位，故以 git 索引为准；校验逻辑见 `git_index_mode`）——正是此前漏掉问题一的盲区。
+- 注意：本仓库自身提交不触发 CI 构建（定时任务只比较上游 immortalwrt 是否更新），需手动 workflow_dispatch 或等上游更新后，以上固件侧修复才会进入 release。
+
 # 变更记录（2026-08-13）：开机噪音根治 + 开机自检/全机体检 + 硬件流卸载修复
 
 在上一轮验收基础上收尾四件事：根治 OpenClash 开机日志噪音、加开机自检与告警、加全机体检脚本、修复硬件流量卸载未默认开启。
