@@ -448,15 +448,40 @@ if [ -n "$OC_INIT_DIR" ]; then
 import sys
 p = sys.argv[1]
 s = open(p, encoding="utf-8").read()
-# boot() 结尾是 "   restart\n}"（restart() 结尾是 "   start\n}"），该两行序列全文件唯一
+# 补丁1（开机去噪）：boot() 结尾是 "   restart\n}"（restart() 结尾是 "   start\n}"），该两行序列全文件唯一
 old = "   restart\n}"
 new = "   restart >> \"$LOG_FILE\" 2>/dev/null\n}"
 n = s.count(old)
 if n == 1:
-    open(p, "w", encoding="utf-8").write(s.replace(old, new))
+    s = s.replace(old, new)
     print("openclash init boot noise patched!")
 else:
     print("WARN: openclash init boot() 结构变化（匹配 %d 处），跳过去噪补丁" % n)
+
+# 补丁2（启动失败标记）：start_fail() 会清零 enable 后调用 stop，与用户手动停止（LuCI 停止按钮
+# 同样置 enable=0）无法区分。补丁让 start_fail 额外留下 /etc/.openclash-start-failed，
+# boot_selfcheck/proxy_watch 据此区分「启动失败要告警」与「手动停止不打扰」。
+old = "start_fail()\n{\n   uci -q set openclash.config.enable=0\n   uci -q commit openclash\n   stop\n   exit 0\n}"
+new = "start_fail()\n{\n   uci -q set openclash.config.enable=0\n   uci -q commit openclash\n   touch /etc/.openclash-start-failed\n   stop\n   exit 0\n}"
+n = s.count(old)
+if n == 1:
+    s = s.replace(old, new)
+    print("openclash init start_fail marker patched!")
+else:
+    print("WARN: openclash init start_fail() 结构变化（匹配 %d 处），跳过标记补丁" % n)
+
+# 补丁3（清除标记）：真正的启动尝试开始时清除标记。放在 enable/procd 检查之后——
+# enable=0 时的空跑不清除，保证「启动失败后仅重启不处理」时标记持续存在、告警不静默丢失。
+old = "   if procd_running \"openclash\" >/dev/null; then\n      LOG_TIP \"OpenClash Already Running, Exit...\"\n      exit 0\n   fi\n\n   LOG_TIP \"OpenClash Start Running...\"\n"
+new = "   if procd_running \"openclash\" >/dev/null; then\n      LOG_TIP \"OpenClash Already Running, Exit...\"\n      exit 0\n   fi\n\n   rm -f /etc/.openclash-start-failed\n   LOG_TIP \"OpenClash Start Running...\"\n"
+n = s.count(old)
+if n == 1:
+    s = s.replace(old, new)
+    print("openclash init start marker-clear patched!")
+else:
+    print("WARN: openclash init start_service() 结构变化（匹配 %d 处），跳过清标记补丁" % n)
+
+open(p, "w", encoding="utf-8").write(s)
 PYEOF
 	else
 		echo "WARN: 未找到 openclash init 脚本，跳过去噪补丁"

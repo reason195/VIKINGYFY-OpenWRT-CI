@@ -23,12 +23,18 @@ flock -n 9 2>/dev/null || exit 0
 
 log "=== boot_selfcheck: start ==="
 
-# 是否"应跑"以配置是否就位为准，而非 enable 标志：init 的 start_fail() 失败时会把 enable 清零，
-# 只盯 enable 会漏掉"启动失败"这种最需要告警的静默故障。未配置（无 MihomoPro.yaml）才跳过。
+# 是否"应跑"以配置是否就位为准，未配置（无 MihomoPro.yaml）才跳过。enable 标志需结合启动失败标记判读：
+# - init 的 start_fail() 失败时会把 enable 清零并留下 /etc/.openclash-start-failed（构建期补丁），
+#   该组合必须继续自检并告警——启动失败正是最需要告警的静默故障；
+# - enable=0 且无标记 = 用户手动停止/停用（含停用后重启），跳过自检不打扰。
 CONF=$(uci -q get openclash.config.config_path 2>/dev/null)
 [ -z "$CONF" ] && CONF="/etc/openclash/config/MihomoPro.yaml"
 if [ ! -f "$CONF" ]; then
 	log "未检测到 OpenClash 配置 ($CONF)，跳过自检"
+	exit 0
+fi
+if [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "0" ] && [ ! -f /etc/.openclash-start-failed ]; then
+	log "OpenClash 已手动停用（enable=0），跳过自检"
 	exit 0
 fi
 

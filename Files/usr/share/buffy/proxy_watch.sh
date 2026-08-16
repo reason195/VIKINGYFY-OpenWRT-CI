@@ -12,6 +12,16 @@ MARK_FAIL="/tmp/.proxy-watch-fail"
 
 log "=== proxy_watch: start ==="
 
+# OpenClash 手动停用则跳过探测（enable=0 需结合启动失败标记判读）：
+# - enable=0 + 无 /etc/.openclash-start-failed → 用户手动停止（LuCI 停止按钮会置 enable=0），属预期状态，不打扰；
+# - enable=0 + 有标记 → 启动失败自清零（init 的 start_fail 会清零 enable 并留下标记），照常告警；
+# - enable=1 → 应在运行，探测失败告警（运行期崩溃不会清 enable）。
+if [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "0" ] && [ ! -f /etc/.openclash-start-failed ]; then
+	rm -f "$MARK_FAIL"
+	log "OpenClash 已手动停用（enable=0），跳过探测"
+	exit 0
+fi
+
 if proxy_204; then
 	rm -f "$MARK_FAIL"
 	log "proxy 204 OK"

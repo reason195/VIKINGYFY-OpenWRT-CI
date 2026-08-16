@@ -21,6 +21,16 @@
 - 新增执行位校验：git 索引为 100755 的文件，路由器 /rom 侧必须可执行（Windows 工作区读不到真实权限位，故以 git 索引为准；校验逻辑见 `git_index_mode`）——正是此前漏掉问题一的盲区。
 - 注意：本仓库自身提交不触发 CI 构建（定时任务只比较上游 immortalwrt 是否更新），需手动 workflow_dispatch 或等上游更新后，以上固件侧修复才会进入 release。
 
+## 四、代理检测静默模式：手动停止 OpenClash 不再告警
+
+- **需求**：经 LuCI 手动停止 OpenClash 后，proxy_watch（每小时 204 探测）与 boot_selfcheck（重启后开机自检）仍会探测失败并推送"代理中断/自检失败"告警。
+- **难点**：enable=0 不等于"手动停止"——init 的 start_fail() 在**启动失败**时同样会清零 enable（boot_selfcheck 原注释明确记录过此行为），只看 enable 会把最需要告警的静默故障静音。
+- **方案**（三处配合）：
+  - `Handles.sh` 构建期给 openclash init 增加补丁：start_fail() 失败时额外留下 `/etc/.openclash-start-failed` 标记；start_service() 真正开始启动尝试时清除（enable=0 的空跑不清除，避免"失败后仅重启不处理"时标记丢失、告警静默）；
+  - `proxy_watch.sh` / `boot_selfcheck.sh` 按状态分流：enable=0 且无标记 → 手动停止，静默跳过；enable=0 且有标记 → 启动失败，照常告警；enable=1 → 运行期崩溃照常告警（运行期崩溃不会清 enable）。
+- **边界**：LuCI 停止按钮会置 enable=0（实机确认），纯 CLI `/etc/init.d/openclash stop` 不改 enable，视为临时中断仍会告警一次——需要静默请用 LuCI 停止或 `uci set openclash.config.enable='0'`。
+- **实机验证**：手动停止状态 proxy_watch 跳过（rc=0 不发告警）、boot_selfcheck 0 秒跳过；模拟启动失败（enable=0 + 标记）走告警分支（rc=1、204 FAIL、推送告警）。
+
 # 变更记录（2026-08-13）：开机噪音根治 + 开机自检/全机体检 + 硬件流卸载修复
 
 在上一轮验收基础上收尾四件事：根治 OpenClash 开机日志噪音、加开机自检与告警、加全机体检脚本、修复硬件流量卸载未默认开启。
