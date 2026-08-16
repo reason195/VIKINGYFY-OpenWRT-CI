@@ -1,2 +1,5 @@
 # Freebuff 客户端本地数据（不入库）
 .freebuff/
+# Python 运行产物（单测/工具运行时生成）
+__pycache__/
+*.pyc
