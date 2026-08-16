@@ -52,6 +52,17 @@ uci -q delete openclash.config.geoasn_auto_update
 uci set openclash.config.geoasn_auto_update='1'
 uci -q delete openclash.config.chnr_auto_update
 uci set openclash.config.chnr_auto_update='1'
+# 定时更新时刻表（小时/星期几）：add_cron() 的模板 "0 $(day_time) * * $(week_time) cmd" 依赖这些选项，
+# 缺失时 uci_get_config 返回空且退出码 0，"|| 兜底"失效 → 生成 "0  * *  cmd" 畸形 4 字段行，
+# busybox crond 整行拒绝 → GEO/大陆白名单周更静默失效（且开机 stop_service 会先删掉烤入的
+# 正确行再生成畸形版）。时刻表与 Files/etc/crontabs/root 烤入版保持一致（周一凌晨错峰）。
+for _opt in geo:0 geosite:2 geoip:1 geoasn:3 chnr:4; do
+	_name="${_opt%%:*}"; _hour="${_opt##*:}"
+	uci -q delete openclash.config.${_name}_update_day_time
+	uci set openclash.config.${_name}_update_day_time="$_hour"
+	uci -q delete openclash.config.${_name}_update_week_time
+	uci set openclash.config.${_name}_update_week_time='1'
+done
 uci -q delete openclash.config.chnr_custom_url
 uci set openclash.config.chnr_custom_url='https://ispip.clang.cn/all_cn.txt'
 uci -q delete openclash.config.chnr6_custom_url

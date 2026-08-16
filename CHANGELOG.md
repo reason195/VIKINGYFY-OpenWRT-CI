@@ -31,6 +31,13 @@
 - **边界**：LuCI 停止按钮会置 enable=0（实机确认），纯 CLI `/etc/init.d/openclash stop` 不改 enable，视为临时中断仍会告警一次——需要静默请用 LuCI 停止或 `uci set openclash.config.enable='0'`。
 - **实机验证**：手动停止状态 proxy_watch 跳过（rc=0 不发告警）、boot_selfcheck 0 秒跳过；模拟启动失败（enable=0 + 标记）走告警分支（rc=1、204 FAIL、推送告警）。
 
+## 五、OpenClash 周更任务畸形 cron 行修复（GEO/大陆白名单自动更新静默失效）
+
+- **发现**：26.08.16 固件实机验收发现运行时 crontab 里 OpenClash 自动生成的周更任务是 4 字段畸形行（`0  * *  /usr/share/openclash/openclash_geo.sh ipdb`），busybox crond 整行拒绝 → GEO 数据库/大陆白名单的每周自动更新自始无效（此前被首启引导下载掩盖；旧固件同样存在）。
+- **根因**：开机流程 `boot() → restart() → stop_service()` 先 `del_cron` 删除烤入的正确 5 字段行（带 #openclash-cron-task 标记），随后 `add_cron()` 按模板 `0 $(day_time) * * $(week_time) cmd` 重新生成；`geo_update_day_time` / `geo_update_week_time` 等 10 个时刻表选项从未配置，`uci_get_config` 对缺失选项返回空且退出码 0，模板里的 `|| 兜底`永不触发 → 两个字段为空。
+- **修复**：`93-buffy-openclash.sh` 补齐 5 组时刻表选项（周一凌晨 0-4 点错峰，与 Files/etc/crontabs/root 烤入版一致），`add_cron` 即可自行生成正确行。
+- **实机验证**：设置选项并重启 OpenClash 后，add_cron 重新生成全部 5 行标准 5 字段任务，代理 204 恢复正常。
+
 # 变更记录（2026-08-13）：开机噪音根治 + 开机自检/全机体检 + 硬件流卸载修复
 
 在上一轮验收基础上收尾四件事：根治 OpenClash 开机日志噪音、加开机自检与告警、加全机体检脚本、修复硬件流量卸载未默认开启。
