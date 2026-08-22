@@ -196,5 +196,49 @@ class RunVerifyTest(unittest.TestCase):
             self.assertEqual(uf.run_verify("h", "u", "p"), -1)
 
 
+class TriggerSysupgradeTest(unittest.TestCase):
+    def _run(self, reset=False, has_setsid=True, has_nohup=False, log_out="", pid=""):
+        mock_cli = MagicMock()
+
+        def fake_ssh_run(_cli, cmd, timeout=30):
+            if "command -v setsid" in cmd:
+                return ("/usr/bin/setsid", "") if has_setsid else ("", "")
+            if "command -v nohup" in cmd:
+                return ("/usr/bin/nohup", "") if has_nohup else ("", "")
+            if cmd.startswith("pgrep"):
+                return (pid, "")
+            return (log_out, "")  # cat /tmp/sysupgrade.log
+
+        with patch.object(uf.time, "sleep", return_value=None), \
+             patch.object(uf, "ssh_run", side_effect=fake_ssh_run):
+            out = uf.trigger_sysupgrade(mock_cli, "/tmp/fw-upgrade.bin", reset)
+        return out, mock_cli.exec_command.call_args[0][0]
+
+    def test_prefers_setsid_with_detached_fds(self):
+        out, cmd = self._run(log_out="Writing 83886080 bytes")
+        self.assertTrue(cmd.startswith("setsid sh -c '"))
+        self.assertIn("</dev/null", cmd)
+        self.assertIn("/tmp/fw-upgrade.bin", cmd)
+        self.assertIn("Writing", out)
+
+    def test_reset_flag_passes_minus_n(self):
+        _, cmd = self._run(reset=True)
+        self.assertIn("sysupgrade -n /tmp/fw-upgrade.bin", cmd)
+
+    def test_falls_back_to_nohup_then_bare_subshell(self):
+        _, cmd = self._run(has_setsid=False, has_nohup=True)
+        self.assertTrue(cmd.startswith("nohup "))
+        _, cmd = self._run(has_setsid=False, has_nohup=False)
+        self.assertTrue(cmd.startswith("( ") and cmd.rstrip().endswith("& )"))
+
+    def test_warns_when_no_log_and_no_process(self):
+        out, _ = self._run(log_out="", pid="")
+        self.assertIn("[warn]", out)
+
+    def test_reports_running_pid_when_log_empty(self):
+        out, _ = self._run(log_out="", pid="12345")
+        self.assertIn("pid=12345", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,23 @@
-# 变更记录（2026-08-16）：实机验收两处固件 bug 修复 + 刷机校验工具增强
+# 变更记录（2026-08-23）：定时改每日凌晨4点 + 一键升级/复验工具三处修复实机验证通过
+
+针对"运行一次不能自动刷固件"的实测排障：定位并修复升级链路三处故障（本机依赖损坏、GitHub CDN 直连被重置、路由器 BusyBox 无 nohup），随后 `upgrade_firmware.py --yes` 全流程实机刷入 26.08.22-02.24.55 成功（重启上线、开机自检 PASS、verify_flash 复验全部通过）。
+
+## 一、QCA-ALL 定时任务：每6小时 → 每天凌晨4点
+
+- `.github/workflows/QCA-ALL.yml` cron `0 */6 * * *` → `0 20 * * *`（北京时间凌晨4点，与 Auto-Clean 的 UTC=北京-8h 惯例一致）；无上游更新仍跳过编译。
+
+## 二、upgrade_firmware.py：三处修复
+
+- **下载通道**：直连 GitHub release CDN 在国内被反复重置（WinError 10054/10060），3 次重试全败——这就是首次运行失败的直接原因。改为直连 + ghproxy 类镜像（ghproxy.net / gh-proxy.com，可增删 `MIRROR_TEMPLATES`）依次回退，每源重试 3 次、Range 断点续传；新增资产大小校验防镜像劫持/半包。镜像内容照常过 GitHub digest 双重 sha256 校验。实测中直连下到 97% 被掐断，自动丢弃换镜像续传完成。
+- **刷机触发**：`nohup sysupgrade &` 在该路由器上静默失败——BusyBox 精简编译没有 nohup applet（实测 jdcloud_re-cs-07），sysupgrade 根本没启动，脚本干等重启 300s 超时。改为 setsid > nohup > 纯后台子壳三级回退，并在触发后 `pgrep` 确认进程真实存在（日志同步打印 pid），杜绝静默失败。
+- **本机环境**：Python 3.14 下 paramiko 缺 `cryptography` 依赖，import 即崩（先于一切业务逻辑）。已重装修复。
+
+## 三、verify_flash.py：SSH 会话断线自动重连
+
+- **现象**：刷机后立即复验时出现 1 项不一致——93-buffy-openclash.sh 五个键"实际None"，且第 3 节满屏 `EXEC-ERR: SSH session not active`。
+- **根因**：全程复用单条 SSH 连接，重启后路由器 SSH/网络抖动导致会话死亡；`run()` 捕获异常返回空串，uci 全读成空，把"会话断了"误报成"固件不一致"。路由器稳定后单独复跑即全部通过，证实为误报。
+- **修复**：引入连接管理器（`ssh_cli`/`ssh_sftp`），transport 失活自动重连后再继续，各比对函数不再透传 cli/sftp。
+
 
 针对最新 release（26.08.15-21.46.59）实机验收发现两处固件 bug 并修复：proxy_watch 自加入以来从未成功运行（缺执行位）；`ipv6 'auto'` 与显式 wan6 冲突导致 wan_6 接口每秒翻动。均已在仓库修复，并在路由器上应急修复验证通过。
 

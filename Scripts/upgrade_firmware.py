@@ -15,6 +15,8 @@
 #
 # 安全：刷机前校验路由器 board_name 与固件设备段一致；sha256 以 GitHub 资产 digest 为准，
 # 下载后本地校验 + 上传后路由器侧 sha256sum 双重校验，任一不一致即中止，绝不强行刷入。
+# 下载通道：直连失败时自动回退 ghproxy 类镜像并断点续传（国内直连 GitHub CDN 常被重置），
+# 镜像内容同样过双重 sha256 校验，防篡改；镜像失效时可增删下方 MIRROR_TEMPLATES。
 
 import argparse
 import hashlib
@@ -27,6 +29,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import paramiko
@@ -42,6 +45,14 @@ DEFAULT_DEVICE = "jdcloud_re-cs-07"  # release 资产文件名中的设备段
 DEFAULT_BOARD = "jdcloud,re-cs-07"   # 路由器 /tmp/sysinfo/board_name
 
 UA = "upgrade_firmware.py"
+
+# 下载源：直连优先，失败按序回退镜像（镜像前缀拼接完整原始 URL）
+MIRROR_TEMPLATES = (
+    "{url}",
+    "https://ghproxy.net/{url}",
+    "https://gh-proxy.com/{url}",
+)
+DOWNLOAD_RETRIES = 3  # 每个下载源的重试次数
 
 
 def log(msg=""):
@@ -98,36 +109,67 @@ def parse_digest(asset):
     return m.group(1).lower() if m else None
 
 
-def download(url, dest, retries=3):
-    """流式下载并返回本地 sha256；Content-Length 存在时打印进度。"""
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+def _fetch(cand_url, dest, expected_size):
+    """从单个下载源拉取一次，支持断点续传；大小与预期不符时抛异常（防镜像劫持/半包）。"""
+    done = os.path.getsize(dest) if os.path.exists(dest) else 0
+    if expected_size and done >= expected_size:
+        return
+    req = urllib.request.Request(cand_url, headers={"User-Agent": UA})
+    if done:
+        req.add_header("Range", f"bytes={done}-")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        status = getattr(r, "status", None) or 200
+        total = None
+        cr = r.headers.get("Content-Range") or ""
+        if "/" in cr:
+            try:
+                total = int(cr.rsplit("/", 1)[1])
+            except ValueError:
+                pass
+        if total is None:
+            try:
+                total = int(r.headers.get("Content-Length")) + done
+            except (TypeError, ValueError):
+                pass
+        if done and status != 206:
+            done = 0  # 对端不支持续传，重头下
+        with open(dest, "ab" if done else "wb") as f:
+            while True:
+                chunk = r.read(256 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    progress(f"  下载中 {done/1048576:.1f}/{total/1048576:.1f} MB ({100*done/total:.0f}%)")
+    log("")
+    if expected_size and done != expected_size:
+        raise IOError(f"文件大小不符（{done} != {expected_size}），已丢弃该源的数据")
+
+
+def download(url, dest, expected_size=None):
+    """直连 + 镜像依次尝试、每源重试 DOWNLOAD_RETRIES 次，支持续传；返回本地文件 sha256。
+
+    镜像属第三方通道，内容最终以 GitHub digest 的 sha256 为准（本地校验 + 路由器侧复验）。
+    """
     last_err = None
-    for attempt in range(1, retries + 1):
-        h = hashlib.sha256()
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                total = int(r.headers.get("Content-Length") or 0)
-                done = 0
-                last_mark = 0
-                with open(dest, "wb") as f:
-                    while True:
-                        chunk = r.read(256 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        h.update(chunk)
-                        done += len(chunk)
-                        if total and (done - last_mark >= 1024 * 1024 or done >= total):
-                            last_mark = done
-                            progress(f"  下载中 {done/1048576:.1f}/{total/1048576:.1f} MB ({100*done/total:.0f}%)")
-                log("")
-            return h.hexdigest().lower()
-        except Exception as ex:
-            last_err = ex
-            log(f"  [warn] 第 {attempt} 次下载失败：{ex}")
-            if attempt < retries:
-                time.sleep(2)
-    raise RuntimeError(f"下载失败（重试 {retries} 次后）：{last_err}")
+    for i, tpl in enumerate(MIRROR_TEMPLATES):
+        cand = tpl.format(url=url)
+        tag = "直连" if i == 0 else f"镜像 {urllib.parse.urlsplit(cand).netloc}"
+        for attempt in range(1, DOWNLOAD_RETRIES + 1):
+            try:
+                _fetch(cand, dest, expected_size)
+                h = hashlib.sha256()
+                with open(dest, "rb") as f:
+                    for blk in iter(lambda: f.read(1024 * 1024), b""):
+                        h.update(blk)
+                return h.hexdigest().lower()
+            except Exception as ex:
+                last_err = ex
+                log(f"  [warn] {tag} 第 {attempt} 次下载失败：{ex}")
+                if attempt < DOWNLOAD_RETRIES:
+                    time.sleep(2)
+    raise RuntimeError(f"下载失败（直连+{len(MIRROR_TEMPLATES)-1} 个镜像均失败）：{last_err}")
 
 
 def ssh_run(cli, cmd, timeout=30):
@@ -157,19 +199,37 @@ def upload(sftp, local, remote):
 
 
 def trigger_sysupgrade(cli, remote, reset):
-    """后台触发 sysupgrade（nohup 防 SSH 断开 SIGHUP），随后读取其日志。"""
+    """后台触发 sysupgrade（脱离会话防 SSH 断开 SIGHUP），随后读取其日志与进程状态。
+
+    部分 BusyBox 精简编译没有 nohup（实测 jdcloud_re-cs-07 就没有），按可用性回退：
+    setsid > nohup > 纯后台子壳。触发后检查进程是否真实存在，避免静默失败干等重启超时。
+    """
     flag = "-n " if reset else ""
-    cmd = f"nohup sysupgrade {flag}{remote} >/tmp/sysupgrade.log 2>&1 &"
+    inner = f"sysupgrade {flag}{remote} >/tmp/sysupgrade.log 2>&1 </dev/null"
+    if ssh_run(cli, "command -v setsid")[0]:
+        cmd = f"setsid sh -c '{inner}' &"
+    elif ssh_run(cli, "command -v nohup")[0]:
+        cmd = f"nohup {inner} &"
+    else:
+        cmd = f"( {inner} & )"
     try:
         _, _, _ = cli.exec_command(cmd, timeout=10)
     except Exception:
         pass  # 后台执行，通道立即返回
     time.sleep(3)
+    notes = []
     try:
         o, _ = ssh_run(cli, "cat /tmp/sysupgrade.log 2>/dev/null", timeout=10)
-        return o
+        if o:
+            notes.append(o)
+        p, _ = ssh_run(cli, "pgrep -f sysupgrade | head -n1", timeout=10)
+        if p.isdigit():
+            notes.append(f"(sysupgrade 进程运行中 pid={p})")
+        elif not o:
+            notes.append("[warn] 触发后未检测到 sysupgrade 日志或进程，刷机可能未启动！")
     except Exception as ex:
-        return f"(SSH 已断开，升级应已进入刷写阶段：{ex})"
+        notes.append(f"(SSH 已断开，升级应已进入刷写阶段：{ex})")
+    return "\n".join(notes)
 
 
 def router_uptime(cli):
@@ -300,7 +360,7 @@ def main():
         if not args.dry_run:
             log("\n== 下载固件 ==")
         try:
-            got = download(asset["browser_download_url"], local)
+            got = download(asset["browser_download_url"], local, expected_size=asset["size"])
         except Exception as ex:
             log(f"ERROR: {ex}")
             return 1

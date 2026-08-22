@@ -52,6 +52,38 @@ MERGE_FILES = {
     "etc/shadow",  # 构建时追加 avahi/ntp/dbus/dnsmasq/logd/sing-box/ubus 等包用户
 }
 
+# 连接管理：全程复用一条会话，但刚刷机重启后路由器 SSH/网络可能抖动导致会话死亡，
+# 此时自动重连，避免后续命令全部读到空值、把「会话断了」误报成「固件不一致」。
+_SSH = {}
+
+
+def ssh_cli(force=False):
+    if not force:
+        cli = _SSH.get("cli")
+        t = cli.get_transport() if cli is not None else None
+        if t is not None and t.is_active():
+            return cli
+    for x in (_SSH.get("sftp"), _SSH.get("cli")):
+        try:
+            if x is not None:
+                x.close()
+        except Exception:
+            pass
+    cli = paramiko.SSHClient()
+    cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    cli.connect(_SSH["host"], username=_SSH["user"], password=_SSH["password"],
+                timeout=10, banner_timeout=10, auth_timeout=10)
+    if not force:
+        print("[warn] SSH 会话失效，已自动重连")
+    _SSH["cli"], _SSH["sftp"] = cli, None
+    return cli
+
+
+def ssh_sftp():
+    if _SSH.get("sftp") is None:
+        _SSH["sftp"] = ssh_cli().open_sftp()
+    return _SSH["sftp"]
+
 
 def norm(b: bytes) -> bytes:
     return b.replace(b"\r\n", b"\n")
@@ -62,9 +94,9 @@ def local_bytes(files_dir: str, rel: str) -> bytes:
         return f.read()
 
 
-def router_bytes(sftp, path: str):
+def router_bytes(path: str):
     try:
-        with sftp.open(path, "rb") as f:
+        with ssh_sftp().open(path, "rb") as f:
             return f.read()
     except IOError:
         return None
@@ -106,9 +138,9 @@ def compare_secret(local_text: str, router_text: str):
     return "FAIL(结构不一致)"
 
 
-def compare_file(sftp, files_dir: str, rel: str):
+def compare_file(files_dir: str, rel: str):
     lb = norm(local_bytes(files_dir, rel))
-    rb = router_bytes(sftp, "/rom/" + rel)
+    rb = router_bytes("/rom/" + rel)
     if rb is None:
         return "SKIP(路由器无此文件)", f"路由器出厂层不存在 /rom/{rel}"
     rb = norm(rb)
@@ -141,17 +173,18 @@ def compare_file(sftp, files_dir: str, rel: str):
     return "FAIL(长度差异)", f"本地 {len(lb)} 字节 vs 路由器 {len(rb)} 字节"
 
 
-def run(cli, cmd, timeout=15):
+def run(cmd, timeout=15):
     try:
-        _, out, err = cli.exec_command(cmd, timeout=timeout)
+        _, out, err = ssh_cli().exec_command(cmd, timeout=timeout)
         return out.read().decode("utf-8", "replace").strip(), err.read().decode("utf-8", "replace").strip()
     except Exception as ex:
+        # 下一次调用会因 transport 失活触发重连；本次先如实报告错误
         return "", f"EXEC-ERR: {ex}"
 
 
-def uci_dump(cli, config):
+def uci_dump(config):
     """解析 `uci show <config>` 输出为 key -> value（多值 list 项返回 list）。"""
-    out, _ = run(cli, f"uci show {config} 2>/dev/null", timeout=20)
+    out, _ = run(f"uci show {config} 2>/dev/null", timeout=20)
     d = {}
     for line in out.splitlines():
         if "=" not in line:
@@ -185,18 +218,18 @@ RUNTIME_CHECKS = [
 ]
 
 
-def check_uci_defaults(cli):
+def check_uci_defaults():
     """校验 4 个首启即消费的 uci-defaults 脚本的运行时效果，返回 [(脚本, ok, 详情)]。"""
     results = []
 
     # 90-buffy-dropbear.sh：解绑 lan 接口，允许经 WAN(IPv6) SSH
-    d = uci_dump(cli, "dropbear")
+    d = uci_dump("dropbear")
     bound = [k for k in d if "Interface" in k]
     results.append(("90-buffy-dropbear.sh", not bound,
                     "Interface/DirectInterface 已解绑" if not bound else f"仍存在接口绑定: {bound}"))
 
     # 91-buffy-uhttpd.sh：LuCI 强制 HTTPS（redirect + 监听 443）
-    d = uci_dump(cli, "uhttpd")
+    d = uci_dump("uhttpd")
     rh = d.get("uhttpd.main.redirect_https")
     lh = d.get("uhttpd.main.listen_https")
     if not isinstance(lh, list):
@@ -206,7 +239,7 @@ def check_uci_defaults(cli):
                     f"redirect_https={rh!r} listen_https={lh!r}"))
 
     # 92-buffy-firewall.sh：硬件流卸载 + fullcone6 + wan forward=DROP + WAN v6 放行 SSH/LuCI
-    d = uci_dump(cli, "firewall")
+    d = uci_dump("firewall")
     fo = d.get("firewall.@defaults[0].flow_offloading")
     foh = d.get("firewall.@defaults[0].flow_offloading_hw")
     fc6 = d.get("firewall.@defaults[0].fullcone6")
@@ -228,7 +261,7 @@ def check_uci_defaults(cli):
                     f"SSHv6={'✓' if ssh_ok else '✗'} LuCIv6={'✓' if luci_ok else '✗'}"))
 
     # 93-buffy-openclash.sh：核心/规则/订阅/时刻表/凭据等运行时选项
-    d = uci_dump(cli, "openclash")
+    d = uci_dump("openclash")
     expected = {
         "en_mode": "fake-ip", "operation_mode": "fake-ip", "redirect_dns": "1",
         "enable_respect_rules": "1", "log_level": "error", "china_ip_route": "1",
@@ -257,7 +290,7 @@ def check_uci_defaults(cli):
         mism.append("dashboard_password: 为空（应首启随机生成）")
     if api_en != "1" or api_user != "clash" or not api_pw:
         mism.append(f"authentication: enabled={api_en!r} username={api_user!r} password空={not api_pw}")
-    creds, _ = run(cli, "cat /etc/openclash-credentials.txt 2>/dev/null", timeout=10)
+    creds, _ = run("cat /etc/openclash-credentials.txt 2>/dev/null", timeout=10)
     if not creds:
         mism.append("/etc/openclash-credentials.txt: 不存在")
     else:
@@ -287,15 +320,13 @@ def main():
         print(f"ERROR: 找不到 Files/ 目录: {files_dir}")
         return 2
 
-    cli = paramiko.SSHClient()
-    cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    _SSH.update({"host": args.host, "user": args.user, "password": args.password})
     print(f"== 连接 {args.user}@{args.host} ==")
     try:
-        cli.connect(args.host, username=args.user, password=args.password, timeout=10, banner_timeout=10, auth_timeout=10)
+        ssh_cli(force=True)
     except Exception as ex:
         print(f"ERROR: SSH 连接失败: {ex}")
         return 2
-    sftp = cli.open_sftp()
 
     print("\n===== 1. Files/ vs /rom（固件一致性） =====")
     failures = 0
@@ -305,11 +336,11 @@ def main():
             if rel in SKIP_ON_ROUTER:
                 print(f"[SKIP] {rel}  (uci-defaults 首启已消费)")
                 continue
-            status, detail = compare_file(sftp, files_dir, rel)
+            status, detail = compare_file(files_dir, rel)
             # 执行位校验：git 索引 755 的文件，路由器 /rom 侧也必须可执行
             if status.startswith("OK") and git_index_mode(files_dir, rel) == "100755":
                 try:
-                    if not sftp.stat("/rom/" + rel).st_mode & 0o111:
+                    if not ssh_sftp().stat("/rom/" + rel).st_mode & 0o111:
                         status, detail = "FAIL(无执行位)", "git 索引为 100755，但路由器 /rom 侧不可执行（cron 直接执行会 rc=126 静默失败）"
                 except IOError:
                     pass  # /rom 无此文件，内容比对已报告
@@ -321,14 +352,14 @@ def main():
                 failures += 1
 
     print("\n===== 2. uci-defaults 运行时效果（首启已消费的脚本） =====")
-    for script, ok, detail in check_uci_defaults(cli):
+    for script, ok, detail in check_uci_defaults():
         print(f"{'✅' if ok else '❌'} [{script}] {detail}")
         if not ok:
             failures += 1
 
     print("\n===== 3. 运行时状态抽查 =====")
     for label, cmd in RUNTIME_CHECKS:
-        o, e = run(cli, cmd)
+        o, e = run(cmd)
         print(f"--- {label}\n{o}" + (f"\n[stderr] {e}" if e else ""))
 
     print("\n===== 4. /etc vs /rom（运行时漂移，仅提示） =====")
@@ -337,7 +368,7 @@ def main():
             rel = os.path.relpath(os.path.join(dirpath, fn), files_dir).replace(os.sep, "/")
             if rel in SKIP_ON_ROUTER:
                 continue
-            rom, etc = router_bytes(sftp, "/rom/" + rel), router_bytes(sftp, "/" + rel)
+            rom, etc = router_bytes("/rom/" + rel), router_bytes("/" + rel)
             if rom is None:
                 continue
             if etc is None:
@@ -345,8 +376,13 @@ def main():
             elif norm(rom) != norm(etc):
                 print(f"[~] {rel} 运行时与出厂不同（openclash/apk 改写，属正常）")
 
-    sftp.close()
-    cli.close()
+    try:
+        if _SSH.get("sftp") is not None:
+            _SSH["sftp"].close()
+        if _SSH.get("cli") is not None:
+            _SSH["cli"].close()
+    except Exception:
+        pass
 
     print("\n===== 汇总 =====")
     if failures:
