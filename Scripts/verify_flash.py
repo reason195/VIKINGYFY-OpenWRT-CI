@@ -228,15 +228,15 @@ def check_uci_defaults():
     results.append(("90-buffy-dropbear.sh", not bound,
                     "Interface/DirectInterface 已解绑" if not bound else f"仍存在接口绑定: {bound}"))
 
-    # 91-buffy-uhttpd.sh：LuCI 强制 HTTPS（redirect + 监听 443）
+    # 91-buffy-uhttpd.sh：LuCI 不强制 HTTPS 跳转（LAN 走 HTTP），保留 443 监听供域名 + LE 证书访问
     d = uci_dump("uhttpd")
     rh = d.get("uhttpd.main.redirect_https")
     lh = d.get("uhttpd.main.listen_https")
     if not isinstance(lh, list):
         lh = [lh]
-    ok = rh == "1" and "0.0.0.0:443" in lh and "[::]:443" in lh
+    ok = rh is None and "0.0.0.0:443" in lh and "[::]:443" in lh
     results.append(("91-buffy-uhttpd.sh", ok,
-                    f"redirect_https={rh!r} listen_https={lh!r}"))
+                    f"redirect_https={rh!r}(应为None，即无强制跳转) listen_https={lh!r}"))
 
     # 92-buffy-firewall.sh：硬件流卸载 + fullcone6 + wan forward=DROP + WAN v6 放行 SSH/LuCI
     d = uci_dump("firewall")

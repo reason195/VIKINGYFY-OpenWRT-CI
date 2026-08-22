@@ -1,3 +1,22 @@
+# 变更记录（2026-08-23 下午）：路由器侧每日自动升级 + 取消 LuCI 强制 HTTPS
+
+两项需求：①一键升级脚本原本只能在 PC 上运行，现新增路由器侧 auto_upgrade.sh，每日自动检查并升级固件；②LuCI 强制 HTTPS 导致 IP 直访必然报 ERR_CERT_AUTHORITY_INVALID 证书告警，取消强制跳转。
+
+## 一、auto_upgrade.sh：路由器每日自更新（cron 10:07）
+
+- **版本发现走 releases.atom**（免认证、无限流）：api.github.com 匿名配额按出口 IP 每小时 60 次，实测代理出口上已被耗尽（403 remaining=0），不可依赖；atom 中取首个匹配 `IPQ60XX-WIFI-NO-` 前缀的 tag。资产文件名由 tag 确定性推导（`qualcommax-ipq60xx-jdcloud_re-cs-07-squashfs-sysupgrade-<tag后缀>.bin`）。
+- **sha256 校验免 API**：`WRT-CORE.yml` 新增 Generate SHA256SUMS 步骤，release 附带全部资产的 `SHA256SUMS.txt`；路由器下载清单后按文件名精确匹配校验。旧 release 无此文件时**不刷机**、告警等下一版。
+- **安全栏**：直连+镜像三源回退；board 校验；/tmp 预检 ≥110MB；flock 防重入；基线 `/etc/auto_upgrade.state` 比对，首次运行仅记录不刷机；sysupgrade 失败回写旧基线；失败/开始均推 ntfy/Telegram；成功后 boot_selfcheck 兜底验证。
+- **开关与调试**：`/etc/config/auto_upgrade` enabled 默认 0（实机已置 1）、keep_config=1 保留配置；`AUTO_UPGRADE_DRYRUN=1` 走全流程不刷写。cron 加入 `Files/etc/crontabs/root`（每日 10:07，避开凌晨 4 点构建窗口）。
+- **实机验证**：首次运行记基线 rc=0；陈旧基线 dry-run 正确发现新版本、因无校验清单干净拒绝（符合预期）；flock fd 语法 busybox 实测可用。
+- PC 端 `upgrade_firmware.py` 复验通过后同步写入 `/etc/auto_upgrade.state`，两种升级途径版本认知一致。
+
+## 二、取消 LuCI 强制 HTTPS
+
+- **现象**：http://192.168.1.1 被 301 到 https，而 IP 直访证书必然无效（ERR_CERT_AUTHORITY_INVALID），每次登录后台都要点警告页。
+- **修复**：`91-buffy-uhttpd.sh` 不再设置 `redirect_https=1`（改为显式删除该选项）；80(HTTP) 走包默认值局域网直连，443(HTTPS) 与 Let's Encrypt 证书保留——经 DDNS 域名访问仍可免告警。`verify_flash.py` 第 91 项预期同步改为"无强制跳转"。
+- **实机验证**：uci 删除 + uhttpd restart 后 http://192.168.1.1 返回 200 OK（不再跳转），https 同样 200。
+
 # 变更记录（2026-08-23）：定时改每日凌晨4点 + 一键升级/复验工具三处修复实机验证通过
 
 针对"运行一次不能自动刷固件"的实测排障：定位并修复升级链路三处故障（本机依赖损坏、GitHub CDN 直连被重置、路由器 BusyBox 无 nohup），随后 `upgrade_firmware.py --yes` 全流程实机刷入 26.08.22-02.24.55 成功（重启上线、开机自检 PASS、verify_flash 复验全部通过）。

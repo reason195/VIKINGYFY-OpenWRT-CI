@@ -437,6 +437,14 @@ def main():
         log("\n== 复验一致性：verify_flash.py ==")
         rc = run_verify(args.host, args.user, args.password)
         if rc == 0:
+            try:
+                # 同步路由器侧 auto_upgrade.sh 的版本基线，避免其把当前版本再刷一遍
+                c = connect(args.host, args.user, args.password)
+                ssh_run(c, f"echo {rel['tag_name']} > /etc/auto_upgrade.state")
+                c.close()
+                log("✅ 已同步 /etc/auto_upgrade.state（auto_upgrade.sh 升级基线）")
+            except Exception as ex:
+                log(f"[warn] 基线同步失败（不影响本机使用，仅 auto_upgrade.sh 可能重复升级）：{ex}")
             log("\n✅ 刷机完成，固件一致性复验通过。")
         else:
             log(f"\n⚠️ verify_flash.py 退出码 {rc}，存在不一致项，请查看上方输出。")
