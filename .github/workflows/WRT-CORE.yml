@@ -298,9 +298,11 @@ jobs:
       - name: Generate SHA256SUMS
         if: env.WRT_TEST != 'true'
         run: |
-          # 为全部资产生成校验清单：路由器端 auto_upgrade.sh 免 GitHub API（匿名限流）校验 sha256 依赖此文件
+          # 为全部资产生成校验清单：路由器端 auto_upgrade.sh 免 GitHub API（匿名限流）校验 sha256 依赖此文件。
+          # 输出裸文件名（不带 ./ 前缀），与路由器端 auto_upgrade.sh 的匹配约定一致
           cd ./wrt/upload/
-          sha256sum ./* > SHA256SUMS.txt
+          rm -f SHA256SUMS.txt
+          ls -A | grep -vx 'SHA256SUMS.txt' | xargs sha256sum > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Release Firmware

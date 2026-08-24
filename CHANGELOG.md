@@ -9,7 +9,9 @@
 - **安全栏**：直连+镜像三源回退；board 校验；/tmp 预检 ≥110MB；flock 防重入；基线 `/etc/auto_upgrade.state` 比对，首次运行仅记录不刷机；sysupgrade 失败回写旧基线；失败/开始均推 ntfy/Telegram；成功后 boot_selfcheck 兜底验证。
 - **开关与调试**：`/etc/config/auto_upgrade` enabled 默认 0（实机已置 1）、keep_config=1 保留配置；`AUTO_UPGRADE_DRYRUN=1` 走全流程不刷写。cron 加入 `Files/etc/crontabs/root`（每日 10:07，避开凌晨 4 点构建窗口）。
 - **实机验证**：首次运行记基线 rc=0；陈旧基线 dry-run 正确发现新版本、因无校验清单干净拒绝（符合预期）；flock fd 语法 busybox 实测可用。
-- PC 端 `upgrade_firmware.py` 复验通过后同步写入 `/etc/auto_upgrade.state`，两种升级途径版本认知一致。
+- **排障（次日 10:07 首次实战失败）**：SHA256SUMS.txt 条目带 `./` 前缀（CI 用 `sha256sum ./*` 生成），脚本按裸文件名匹配不到。修复：脚本 awk 归一化兼容 `裸名 / *name / ./name` 三种形态，CI 改为 `ls -A | xargs sha256sum` 输出裸名。dry-run 全链路复测通过（84MB 经代理直连 10 秒下完）后正式升级 `26.08.24-04.18.02` 成功：BUILD_ID `r0-b193c19`、开机自检 PASS、LuCI HTTP 正常。
+- **基线存储改 uci**：首版把基线写普通文件 `/etc/auto_upgrade.state`，sysupgrade 不在保留清单、升级后被清，会导致次日重复刷同版本；改为存 `/etc/config/auto_upgrade` 的 `last_tag` 选项（`/etc/config/` 为 sysupgrade 默认保留目录）。PC 端同步写入处一并修改。
+- PC 端 `upgrade_firmware.py` 复验通过后同步写入基线，两种升级途径版本认知一致。
 
 ## 二、取消 LuCI 强制 HTTPS
 

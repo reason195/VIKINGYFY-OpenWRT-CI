@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 # auto_upgrade.sh - 每日检查 GitHub 新固件，发现新版本自动下载校验并 sysupgrade 升级（cron 触发）
 # 开关：/etc/config/auto_upgrade 的 enabled（默认 0）；keep_config=1（默认）保留配置升级，0 则 sysupgrade -n 重置。
-# 基线：/etc/auto_upgrade.state 记录当前运行的 release tag；为空视为首次运行，仅记录基线不刷机。
+# 基线：/etc/config/auto_upgrade 的 last_tag 选项记录当前运行的 release tag（/etc/config 为
+# sysupgrade 默认保留目录，普通 /etc 文件升级会被清掉）；为空视为首次运行，仅记录基线不刷机。
 # 版本发现走 releases.atom（免认证、无匿名限流，api.github.com 按出口 IP 60次/小时不可靠）；
 # 资产文件名可由 tag 确定性推导；sha256 校验读 release 附带的 SHA256SUMS.txt（WRT-CORE.yml 构建期生成，
 # 旧版 release 无此文件时不刷机、等下一个带校验清单的版本）。下载直连失败回退镜像。
@@ -18,7 +19,6 @@ REPO="reason195/VIKINGYFY-OpenWRT-CI"
 TAG_PREFIX="IPQ60XX-WIFI-NO-VIKINGYFY-main-"
 DEVICE="jdcloud_re-cs-07"
 BOARD="jdcloud,re-cs-07"
-STATE="/etc/auto_upgrade.state"
 FW="/tmp/fw-upgrade-auto.bin"
 
 if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 204800 ]; then : > "$LOG"; fi
@@ -58,9 +58,10 @@ NAME="qualcommax-ipq60xx-${DEVICE}-squashfs-sysupgrade-${SUFFIX}.bin"
 BASE="https://github.com/$REPO/releases/download/$TAG"
 
 # --- 2. 与基线比对 ---
-CUR=$(cat "$STATE" 2>/dev/null)
+CUR=$(uci -q get 'auto_upgrade.@auto_upgrade[0].last_tag')
 if [ -z "$CUR" ]; then
-	echo "$TAG" > "$STATE"
+	uci set "auto_upgrade.@auto_upgrade[0].last_tag=$TAG"
+	uci commit auto_upgrade
 	log "首次运行：记录当前最新版本 $TAG 为基线（不刷机）"
 	exit 0
 fi
@@ -79,7 +80,8 @@ for U in "$BASE/SHA256SUMS.txt" "https://ghproxy.net/$BASE/SHA256SUMS.txt" "http
 done
 [ -n "$OK" ] || fail "SHA256SUMS.txt 拉取失败（release $TAG 可能未附带校验文件，等待下一版）"
 mv "$SUMS.part" "$SUMS"
-EXPECT=$(awk -v n="$NAME" '$2 == "*"n || $2 == n {print $1}' "$SUMS")
+# 兼容三种条目形态：裸名 / *name / ./name（首版 CI 用 sha256sum ./* 生成过带 ./ 前缀的清单）
+EXPECT=$(awk -v n="$NAME" '{f=$2; sub(/^\*/,"",f); sub(/^\.\//,"",f)} f==n{print $1}' "$SUMS")
 [ "${#EXPECT}" = "64" ] || fail "SHA256SUMS.txt 中未找到 $NAME 的条目"
 
 # --- 4. 下载固件（直连优先，镜像回退；与 PC 端 upgrade_firmware.py 的 MIRROR_TEMPLATES 保持一致） ---
@@ -108,13 +110,15 @@ if [ "${AUTO_UPGRADE_DRYRUN:-0}" = "1" ]; then
 fi
 
 notify "路由器自动升级开始" "$CUR -> $TAG（$MODE），即将重启，约 3 分钟恢复"
-echo "$TAG" > "$STATE"
+uci set "auto_upgrade.@auto_upgrade[0].last_tag=$TAG"
+uci commit auto_upgrade
 log "触发：sysupgrade $FLAG$FW"
 sysupgrade $FLAG"$FW" >>"$LOG" 2>&1
 RC=$?
 sleep 5
 if [ "$RC" -ne 0 ]; then
-	echo "$CUR" > "$STATE"  # 校验未过/写入失败，还原基线避免下次误判已升级
+	uci set "auto_upgrade.@auto_upgrade[0].last_tag=$CUR"
+	uci commit auto_upgrade  # 校验未过/写入失败，还原基线避免下次误判已升级
 	fail "sysupgrade 返回 rc=$RC"
 fi
 log "sysupgrade 已下发（rc=0），路由器重启中"

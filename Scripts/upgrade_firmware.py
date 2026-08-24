@@ -440,9 +440,9 @@ def main():
             try:
                 # 同步路由器侧 auto_upgrade.sh 的版本基线，避免其把当前版本再刷一遍
                 c = connect(args.host, args.user, args.password)
-                ssh_run(c, f"echo {rel['tag_name']} > /etc/auto_upgrade.state")
+                ssh_run(c, f"uci set 'auto_upgrade.@auto_upgrade[0].last_tag={rel['tag_name']}'; uci commit auto_upgrade")
                 c.close()
-                log("✅ 已同步 /etc/auto_upgrade.state（auto_upgrade.sh 升级基线）")
+                log("✅ 已同步 auto_upgrade.last_tag（auto_upgrade.sh 升级基线）")
             except Exception as ex:
                 log(f"[warn] 基线同步失败（不影响本机使用，仅 auto_upgrade.sh 可能重复升级）：{ex}")
             log("\n✅ 刷机完成，固件一致性复验通过。")
