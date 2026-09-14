@@ -240,5 +240,44 @@ class TriggerSysupgradeTest(unittest.TestCase):
         self.assertIn("pid=12345", out)
 
 
+class MainAbortPathsTest(unittest.TestCase):
+    """main() 的两条安全关键中止分支（"绝不刷错/刷坏固件"的最后一道闸门）。
+
+    只 mock 网络/SSH/下载/时间，不发真实请求；聚焦两条拒绝刷机的 return 1 路径。
+    """
+
+    def _argv(self):
+        return ["upgrade_firmware.py", "--host", "192.0.2.1", "--user", "root", "--password", "pw"]
+
+    def test_aborts_on_board_mismatch(self):
+        releases = make_releases()
+        with patch.object(uf, "fetch_releases", return_value=releases), \
+                patch.object(uf.sys, "argv", self._argv()), \
+                patch.object(uf, "connect", return_value=MagicMock()), \
+                patch.object(uf, "ssh_run", return_value=("some-other-board", "")), \
+                patch.object(uf, "download") as mock_dl:
+            rc = uf.main()
+        self.assertEqual(rc, 1)
+        mock_dl.assert_not_called()  # 设备不匹配，绝不能进入下载/刷机阶段
+
+    def test_aborts_on_router_side_sha256_mismatch(self):
+        releases = make_releases()
+        seq = [
+            ("jdcloud,re-cs-07", ""),  # ① board 匹配
+            ("2048", ""),              # ② df -m /tmp 空间检查
+            ("d" * 64, ""),            # ③ 路由器侧 sha256sum —— 与 GitHub digest 不符
+        ]
+        with patch.object(uf.sys, "argv", self._argv()), \
+                patch.object(uf, "fetch_releases", return_value=releases), \
+                patch.object(uf, "connect", return_value=MagicMock()), \
+                patch.object(uf, "ssh_run", side_effect=seq), \
+                patch.object(uf, "download", return_value="b" * 64), \
+                patch.object(uf, "upload", return_value=None), \
+                patch.object(uf, "router_uptime") as mock_up:
+            rc = uf.main()
+        self.assertEqual(rc, 1)
+        self.assertFalse(mock_up.called)  # 校验不过不得进入"等待重启"阶段
+
+
 if __name__ == "__main__":
     unittest.main()

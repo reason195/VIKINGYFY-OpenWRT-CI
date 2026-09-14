@@ -16,6 +16,17 @@ jobs:
   auto_clean:
     runs-on: ubuntu-latest
     steps:
+      - name: Skip cleanup while build in progress
+        run: |
+          # QCA-ALL 编译（cron 0 20）实测常超 1 小时，与 Auto-Clean（cron 0 21）存在竞争窗口：
+          # 清理恰逢构建发布 release / 生成变更日志（读 PREV_TAG）时，会读到漂移的 PREV_TAG
+          # （变更范围错误），甚至误删刚发布的版本。检测到构建进行中则本轮跳过清理。
+          RUNS=$(gh run list --workflow=QCA-ALL.yml --status=in_progress --limit 1 --json databaseId -q '.[].databaseId' 2>/dev/null || true)
+          if [ -n "$RUNS" ]; then
+            echo "::warning::QCA-ALL 构建进行中（run=${RUNS}），跳过本轮清理"
+            exit 0
+          fi
+          echo "无进行中的 QCA-ALL 构建，继续清理"
       - name: Delete old Releases and Workflows
         uses: ophub/delete-releases-workflows@main
         with:

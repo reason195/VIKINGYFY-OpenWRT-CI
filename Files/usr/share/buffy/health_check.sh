@@ -9,9 +9,6 @@
 # 任一 FAIL：退出码非 0 并推 ntfy/Telegram 告警；日志：/tmp/health_check.log
 
 LOG="/tmp/health_check.log"
-NTFY="https://ntfy.sh/buffy-reason195-router"
-DOMAIN="reason195.duckdns.org"
-LEAF="/etc/acme/${DOMAIN}_ecc/${DOMAIN}.cer"
 
 PASS=0
 FAIL=0

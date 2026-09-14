@@ -30,6 +30,11 @@ on:
 #CI权限
 permissions: write-all
 
+#CI并发：定时 + 手动触发串行化，防止并发构建对同一 release 前缀产生竞态（PREV_TAG 漂移/发布交叉）
+concurrency:
+  group: qca-build
+  cancel-in-progress: false
+
 #CI任务
 jobs:
   #检查上游源码更新

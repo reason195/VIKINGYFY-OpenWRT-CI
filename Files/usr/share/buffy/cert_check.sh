@@ -7,11 +7,11 @@
 
 . /usr/share/buffy/lib-buffy.sh
 
-DOMAIN="reason195.duckdns.org"
-LEAF="/etc/acme/${DOMAIN}_ecc/${DOMAIN}.cer"
+# 本脚本走证书专用通知主题，覆盖 lib 默认（NTFY/DOMAIN/LEAF 均由 lib 提供，勿重复定义）
+NTFY="https://ntfy.sh/buffy-reason195-cert"
+
 FULLCHAIN="/etc/ssl/acme/${DOMAIN}.fullchain.crt"
 KEY="/etc/ssl/acme/${DOMAIN}.key"
-NTFY="https://ntfy.sh/buffy-reason195-cert"
 FAIL_CNT_FILE="/tmp/acme_fail_count"
 RENEW_WINDOW=1209600   # 14 天（秒）
 

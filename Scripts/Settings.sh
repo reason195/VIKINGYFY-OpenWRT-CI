@@ -2,14 +2,26 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 
+#对 find 结果执行 sed：结果为空时不调用，避免 sed -i 无文件入参报错（find 目录不存在时静默跳过）
+sed_safe() { # $1=sed 表达式，其余=文件列表
+	local expr="$1"; shift
+	[ -n "$*" ] && sed -i "$expr" "$@"
+}
+
 #移除luci-app-attendedsysupgrade
-sed -i "/attendedsysupgrade/d" $(find ./feeds/luci/collections/ -type f -name "Makefile")
+sed_safe "/attendedsysupgrade/d" $(find ./feeds/luci/collections/ -type f -name "Makefile")
 #修改默认主题
-sed -i "s/luci-theme-bootstrap/luci-theme-$WRT_THEME/g" $(find ./feeds/luci/collections/ -type f -name "Makefile")
+sed_safe "s/luci-theme-bootstrap/luci-theme-$WRT_THEME/g" $(find ./feeds/luci/collections/ -type f -name "Makefile")
 #修改immortalwrt.lan关联IP
-sed -i "s/192\.168\.[0-9]*\.[0-9]*/$WRT_IP/g" $(find ./feeds/luci/modules/luci-mod-system/ -type f -name "flash.js")
+sed_safe "s/192\.168\.[0-9]*\.[0-9]*/$WRT_IP/g" $(find ./feeds/luci/modules/luci-mod-system/ -type f -name "flash.js")
 #添加编译日期标识
-sed -i "s/(\(luciversion || ''\))/(\1) + (' \/ $WRT_MARK-$WRT_DATE')/g" $(find ./feeds/luci/modules/luci-mod-status/ -type f -name "10_system.js")
+LUCI_STATUS_JS=$(find ./feeds/luci/modules/luci-mod-status/ -type f -name "10_system.js")
+sed_safe "s/(\(luciversion || ''\))/(\1) + (' \/ $WRT_MARK-$WRT_DATE')/g" $LUCI_STATUS_JS
+#校验替换已生效：WRT_MARK 取自 GitHub 用户名，含特殊字符会破坏上面 sed 表达式（静默失败则报错阻断）
+if [ -n "$LUCI_STATUS_JS" ] && ! grep -Fq "/ $WRT_MARK-$WRT_DATE" $LUCI_STATUS_JS; then
+	echo "ERROR: 编译日期标识替换未生效（WRT_MARK/WRT_DATE 含 sed 特殊字符？）"
+	exit 1
+fi
 
 WIFI_SH=$(find ./target/linux/{mediatek/filogic,qualcommax}/base-files/etc/uci-defaults/ -type f -name "*set-wireless.sh" 2>/dev/null)
 WIFI_UC="./package/network/config/wifi-scripts/files/lib/wifi/mac80211.uc"
@@ -48,10 +60,9 @@ if [ -n "$WRT_PACKAGE" ]; then
 	echo -e "$WRT_PACKAGE" >> ./.config
 fi
 
-#无WIFI配置标志
-if [[ "${WRT_CONFIG,,}" == *"wifi"* && "${WRT_CONFIG,,}" == *"no"* ]]; then
-	echo "WRT_WIFI=wifi-no" >> $GITHUB_ENV
-fi
+#无WIFI配置标志：
+#WRT_WIFI 已由 WRT-CORE.yml「Initialization Values」单点定义（完整 if/else），此处不再重复赋值，
+#避免同名 GITHUB_ENV 后写覆盖 + 步骤顺序隐式依赖的脆弱设计（仅影响 release 描述文字，见 CODE-REVIEW.md P2-1）
 
 #高通平台调整
 DTS_PATH="./target/linux/qualcommax/dts/"
@@ -82,8 +93,9 @@ if [ -d "$GITHUB_WORKSPACE/Files" ]; then
 	cp -rf $GITHUB_WORKSPACE/Files/. ./files/
 	#敏感文件权限修正（git 只保留可执行位，需恢复 0600）
 	chmod 600 ./files/etc/shadow ./files/etc/ppp/chap-secrets ./files/etc/buffy-notify.conf 2>/dev/null
-	#buffy 脚本执行位兜底：cron 直接执行这些脚本，git 索引漏 644 会烤进固件导致每小时静默失败（rc=126 无告警）
-	chmod +x ./files/usr/share/buffy/*.sh 2>/dev/null
+	#脚本执行位兜底：cron 直接执行这些脚本，git 索引漏 644 会烤进固件导致静默失败（rc=126 无告警）；
+	#acme dnsapi 插件同理由 source/直接执行两种加载方式，一并兜底（CODE-REVIEW.md P2-8）
+	chmod +x ./files/usr/share/buffy/*.sh ./files/usr/lib/acme/client/dnsapi/*.sh 2>/dev/null
 fi
 
 #==== 敏感配置注入（GitHub Secrets，占位符见 Files/ 内 @@XXX@@）====

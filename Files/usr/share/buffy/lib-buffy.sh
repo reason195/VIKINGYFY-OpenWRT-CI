@@ -1,8 +1,15 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 # lib-buffy.sh - buffy 各脚本公共函数库（source 引入，勿直接执行）
-# 提供：log / notify / resolve / cert_expires_within / openclash_ready / proxy_204
-# 约定：调用方需先定义 LOG（log 用）、NTFY（ntfy 告警，可选）。notify 同时走 ntfy 与 Telegram。
+# 提供：log / notify / resolve / cert_expires_within / openclash_conf / openclash_ready / proxy_204
+# 共享配置：NTFY（ntfy 主题）、DOMAIN（DDNS 域名）、LEAF（证书叶路径，由 DOMAIN 派生）——
+# 在此单点定义，其余脚本 source 后直接使用、勿重复硬编码；需独立主题的脚本可在 source 后覆盖 NTFY。
+# 约定：调用方需先定义 LOG（log 用）。notify 同时走 ntfy 与 Telegram。
+
+# ---- 共享配置（改这里，全局生效） ----
+NTFY="${NTFY:-https://ntfy.sh/buffy-reason195-router}"
+DOMAIN="${DOMAIN:-reason195.duckdns.org}"
+LEAF="/etc/acme/${DOMAIN}_ecc/${DOMAIN}.cer"
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
@@ -38,6 +45,15 @@ resolve() { # $1=域名 [$2=DNS 服务器]
 cert_expires_within() { # $1=cert 路径 $2=秒数
 	openssl x509 -checkend "$2" -noout -in "$1" >/dev/null 2>&1
 	[ $? -ne 0 ]
+}
+
+# OpenClash 配置文件路径：优先 uci config_path，缺省回退默认文件名。
+# boot_selfcheck / first_boot_download 共用同一判定口径，勿在各脚本重复实现。
+openclash_conf() {
+	local c
+	c=$(uci -q get openclash.config.config_path 2>/dev/null)
+	[ -z "$c" ] && c="/etc/openclash/config/MihomoPro.yaml"
+	echo "$c"
 }
 
 # OpenClash 核心进程 + external-controller 就绪

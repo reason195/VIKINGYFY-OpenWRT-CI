@@ -7,7 +7,6 @@
 . /usr/share/buffy/lib-buffy.sh
 
 LOG="/tmp/proxy_watch.log"
-NTFY="https://ntfy.sh/buffy-reason195-router"
 MARK_FAIL="/tmp/.proxy-watch-fail"
 
 log "=== proxy_watch: start ==="

@@ -27,6 +27,14 @@ flock -n 9 2>/dev/null || exit 0
 
 log "=== first_boot_download: start ==="
 
+# 与 boot_selfcheck 同口径（openclash_conf）：未配置 OpenClash（无配置文件）则跳过，
+# 避免未配置时每次开机白等核心/代理就绪再退出
+CONF=$(openclash_conf)
+if [ ! -f "$CONF" ]; then
+	log "未检测到 OpenClash 配置 ($CONF)，跳过首启引导"
+	exit 0
+fi
+
 # ---- 1. 等待 OpenClash 启动完成（核心进程 + 控制端口就绪），最长 10 分钟 ----
 WAIT=0
 while [ "$WAIT" -lt 600 ] && ! openclash_ready; do

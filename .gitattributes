@@ -1,2 +1,6 @@
 # 文本文件统一 LF：防止 Windows core.autocrlf 把 CRLF 烤进固件（busybox sh 遇 \r 报错）
 * text=auto eol=lf
+# 二进制资产（GEO 数据库等）：禁止 text 转换，防止 CRLF/编码破坏（CODE-REVIEW.md P2-14）
+Files/etc/openclash/**/*.mmdb binary
+Files/**/*.dat binary
+Files/**/*.ipset binary

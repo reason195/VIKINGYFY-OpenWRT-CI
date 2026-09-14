@@ -13,7 +13,6 @@
 . /usr/share/buffy/lib-buffy.sh
 
 LOG="/tmp/auto_upgrade.log"
-NTFY="https://ntfy.sh/buffy-reason195-router"
 
 REPO="reason195/VIKINGYFY-OpenWRT-CI"
 TAG_PREFIX="IPQ60XX-WIFI-NO-VIKINGYFY-main-"
@@ -43,7 +42,8 @@ FLAG=""
 [ "$(uci -q get 'auto_upgrade.@auto_upgrade[0].keep_config')" = "0" ] && FLAG="-n "
 
 AVAIL=$(df -m /tmp | awk 'NR==2{print $4}')
-[ "${AVAIL:-0}" -ge 110 ] 2>/dev/null || fail "/tmp 可用空间不足（${AVAIL:-?}MB < 110MB）"
+# 固件约 80–100MB，留足余量防下载中途 /tmp（tmpfs）耗尽；与 upgrade_firmware.py 的空间检查口径一致
+[ "${AVAIL:-0}" -ge 150 ] 2>/dev/null || fail "/tmp 可用空间不足（${AVAIL:-?}MB < 150MB）"
 
 # --- 1. 从 releases.atom 发现最新匹配前缀的 tag ---
 FEED=$(curl -fsS -m 30 -A "auto_upgrade.sh" "https://github.com/$REPO/releases.atom" 2>/dev/null) \
