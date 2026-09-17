@@ -1,9 +1,15 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 # auto_upgrade.sh - 每日检查 GitHub 新固件，发现新版本自动下载校验并 sysupgrade 升级（cron 触发）
-# 开关：/etc/config/auto_upgrade 的 enabled（默认 0）；keep_config=1（默认）保留配置升级，0 则 sysupgrade -n 重置。
-# 基线：/etc/config/auto_upgrade 的 last_tag 选项记录当前运行的 release tag（/etc/config 为
-# sysupgrade 默认保留目录，普通 /etc 文件升级会被清掉）；为空视为首次运行，仅记录基线不刷机。
+# 开关：/etc/config/auto_upgrade 的 enabled（默认 1，见 Files/etc/config/auto_upgrade）；
+# keep_config=1（默认）保留配置升级，0 则 sysupgrade -n 重置。
+# 开关位于 /etc/config —— 该目录会被 sysupgrade -n 清空，历史上一次"不保留配置"刷机曾让本功能
+# 静默失效三天（2026-09-15~17 日志只有"未启用"，无任何告警）。对策：配置段缺失时自动重建；
+# 未启用时退出行为不变，但每周一推一次告警（/tmp 标记节流，每 boot 最多一次）。
+# 基线：/etc/config/auto_upgrade 的 last_tag 记录当前运行的 release tag（/etc/config 为 sysupgrade
+# 默认保留目录，普通 /etc 文件升级会被清掉）。last_tag 为空时优先读固件内 /etc/buffy-version
+# （构建期由 Scripts/Settings.sh 写入本固件 tag）作为"运行版本"基线，使配置被重置后仍能正确判断
+# 运行版本 vs 最新版本并升级；无该文件（旧固件）时退回旧行为：仅记录最新版本为基线、不刷机。
 # 版本发现走 releases.atom（免认证、无匿名限流，api.github.com 按出口 IP 60次/小时不可靠）；
 # 资产文件名可由 tag 确定性推导；sha256 校验读 release 附带的 SHA256SUMS.txt（WRT-CORE.yml 构建期生成，
 # 旧版 release 无此文件时不刷机、等下一个带校验清单的版本）。下载直连失败回退镜像。
@@ -33,7 +39,27 @@ log "=== auto_upgrade: start ==="
 exec 9>>/tmp/.auto_upgrade.lock
 flock -n 9 || { log "已有实例运行，退出"; exit 0; }
 
-[ "$(uci -q get 'auto_upgrade.@auto_upgrade[0].enabled')" = "1" ] || { log "未启用（enabled≠1），退出"; exit 0; }
+# 配置段缺失时重建：/etc/config 被清空后 uci set 会静默失败，脚本将永远停在基线写入分支而不升级
+if ! uci -q get 'auto_upgrade.@auto_upgrade[0]' >/dev/null 2>&1; then
+	uci -q add auto_upgrade auto_upgrade
+	uci set 'auto_upgrade.@auto_upgrade[0].enabled=1'
+	uci set 'auto_upgrade.@auto_upgrade[0].keep_config=1'
+	uci commit auto_upgrade
+	log "配置段缺失，已按默认值重建（enabled=1，keep_config=1）"
+fi
+
+if [ "$(uci -q get 'auto_upgrade.@auto_upgrade[0].enabled')" = "1" ]; then
+	:
+else
+	# 未启用是历史故障的静默点：不告警时用户无从察觉（2026-09-15~17 连续三天无升级、无提示）。
+	# 退出行为保持不变，仅每周一（date +%u = 1）首次运行时推一次告警，/tmp 标记节流。
+	log "未启用（enabled≠1），退出"
+	if [ "$(date +%u)" = "1" ] && [ ! -f /tmp/.auto_upgrade_off_notified ]; then
+		touch /tmp/.auto_upgrade_off_notified
+		notify "路由器自动升级未启用" "auto_upgrade enabled≠1，固件不会自动升级。启用：uci set auto_upgrade.@auto_upgrade[0].enabled=1 && uci commit auto_upgrade"
+	fi
+	exit 0
+fi
 
 BOARD_NOW=$(cat /tmp/sysinfo/board_name 2>/dev/null)
 [ "$BOARD_NOW" = "$BOARD" ] || fail "设备不匹配（$BOARD_NOW），拒绝自动刷机"
@@ -60,10 +86,21 @@ BASE="https://github.com/$REPO/releases/download/$TAG"
 # --- 2. 与基线比对 ---
 CUR=$(uci -q get 'auto_upgrade.@auto_upgrade[0].last_tag')
 if [ -z "$CUR" ]; then
-	uci set "auto_upgrade.@auto_upgrade[0].last_tag=$TAG"
-	uci commit auto_upgrade
-	log "首次运行：记录当前最新版本 $TAG 为基线（不刷机）"
-	exit 0
+	# 基线自愈：构建期由 Settings.sh 写入 /etc/buffy-version（内容为本固件的 release tag）。
+	# 必须以"运行版本"为基线才能判断是否需要升级；否则会把最新版本记为基线，
+	# 造成配置被重置后永远落后一版且此后再不升级（2026-09-17 排障定位到的第二个缺陷）。
+	RUNNING=$(cat /etc/buffy-version 2>/dev/null)
+	if [ -n "$RUNNING" ]; then
+		CUR="$RUNNING"
+		uci set "auto_upgrade.@auto_upgrade[0].last_tag=$CUR"
+		uci commit auto_upgrade
+		log "基线缺失，已按固件内构建版本初始化：$CUR"
+	else
+		uci set "auto_upgrade.@auto_upgrade[0].last_tag=$TAG"
+		uci commit auto_upgrade
+		log "首次运行且固件无版本标识：记录当前最新版本 $TAG 为基线（不刷机）"
+		exit 0
+	fi
 fi
 [ "$TAG" != "$CUR" ] || { log "已是最新（$TAG），退出"; exit 0; }
 

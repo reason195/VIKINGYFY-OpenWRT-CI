@@ -1,3 +1,5 @@
 config auto_upgrade
-	option enabled '0'
+	# 默认开启。注意：本开关存放在 /etc/config，而 sysupgrade -n（不保留配置）会清空该目录，
+	# 默认 0 曾导致一次重置刷机后本功能永久静默失效（2026-09-15~17 三天未自动升级且无任何提示）。
+	option enabled '1'
 	option keep_config '1'

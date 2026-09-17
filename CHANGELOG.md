@@ -1,3 +1,47 @@
+# 变更记录（2026-09-17 晚）：修复自动升级静默失效——开关被「不保留配置」刷机清空 + 基线自愈
+
+**现象**：今早 06:35 构建的 `26.09.17-06.35.27` 已于 07:14 发布，但路由器 10:07 的 cron 未触发升级；且 `/tmp/auto_upgrade.log` 连续三天（09-15/16/17）只有同一行 `未启用（enabled≠1），退出`，无任何告警。
+
+**定位**：故障点在**升级触发条件**，不在编译产物、检测逻辑或执行环节。
+
+- 产物正常：release 含 sysupgrade bin（88,187,152 B）、factory、manifest、Config、`SHA256SUMS.txt`；资产名与脚本推导完全一致。
+- 检测正常：`releases.atom` 取到 `26.09.17-06.35.27`，前缀匹配；`/tmp` 可用 974MB ≥ 150MB。
+- 执行正常：`logread` 证明 crond 按时触发（`Thu Sep 17 10:07:00 2026 cron.err crond[...]: USER root pid 9915 cmd /usr/share/buffy/auto_upgrade.sh`）。
+- **触发条件故障**：`uci show auto_upgrade` → `enabled='0'`、**无 `last_tag`**。`last_tag` 缺失说明脚本首次运行时开关已是 0——即**刷机时就被关掉**，不是事后被改。
+
+**根因（两处结构性缺陷）**：
+
+1. **开关存放在会被清空的目录**。`enabled` 位于 `/etc/config/auto_upgrade`，出厂默认值为 `enabled '0'`；而 `sysupgrade -n`（不保留配置）会清空整个 `/etc/config`。一次重置刷机后开关回到默认 0，此后永久静默失效。
+2. **基线缺失时语义反向**。`last_tag` 为空时原逻辑是「把当前最新版本记为基线、不刷机」——配置被重置后它会把**最新版本**当基线，导致永远落后一版且此后再不升级。
+
+## 一、`auto_upgrade.sh` 修复
+
+- **配置段缺失自动重建**：`uci -q get` 探测不到配置段时，按默认值（`enabled=1`、`keep_config=1`）重建后再继续。此前 `/etc/config` 被清空后 `uci set` 会静默失败，脚本永远停在基线写入分支。
+- **基线自愈**：`last_tag` 为空时优先读固件内 `/etc/buffy-version`（构建期写入的本固件 tag）作为「运行版本」基线，据此正确判断是否需要升级；无该文件（旧固件）时退回旧行为。
+- **未启用不再完全静默**：退出行为不变，但每周一首次运行时推一次告警（`/tmp` 标记节流）并给出启用命令——针对三天无声失效。
+- 文件头注释补齐上述成因与语义。
+
+## 二、`Files/etc/config/auto_upgrade`：出厂默认 `enabled '0'` → `'1'`
+
+重置刷机后即自动恢复自动升级；加注释说明该目录会被 `sysupgrade -n` 清空。
+
+## 三、`Scripts/Settings.sh`：构建期写入 `/etc/buffy-version`
+
+内容为本次构建的 release tag（`$WRT_CONFIG-$WRT_INFO-$WRT_BRANCH-$WRT_DATE`，与 `WRT-CORE.yml` 的 `tag_name` 一致），供路由器端自愈基线。`WRT_DATE` 为空时跳过并告警。
+
+## 四、`Tests/test_auto_upgrade.sh`（新增）
+
+无需路由器/网络的沙箱回归测试：重写脚本绝对路径到沙箱、`PATH` 前置 mock（`uci`/`curl`/`df`/`flock`/`date`/`sysupgrade`）、用 fixture atom 驱动决策逻辑。6 个用例 20 项断言：正常升级路径、基线自愈、旧固件兜底、已是最新、未启用周一告警节流、配置段重建。**20 passed / 0 failed**。
+
+## 五、实机验证（2026-09-17 晚）
+
+- **实跑升级**：先修复路由器端开关与基线（`enabled=1`、`last_tag=26.09.08-06.29.39`），`AUTO_UPGRADE_DRYRUN=1` 空跑通过（84.10M 下载、sha256 一致），随后实跑刷入 `26.09.17-06.35.27`：21:39:07 下发、设备离线、98 秒后回归，`last_tag` 自动推进到新 tag（无重复刷机循环）。
+- **修复版脚本上机验证**：本次固件基于 5c4d1c8、早于本轮修复，故把仓库 HEAD 版传到 `/tmp` 在真机跑两条关键路径——基线落后（45s，下载+校验+dryrun 通过）；基线缺失 + `/etc/buffy-version` 存在（48s，日志 `基线缺失，已按固件内构建版本初始化：26.09.08-06.29.39`，**未**把最新版当基线）。
+- **PC 侧复验**：`verify_flash.py` 仅报 2 项不一致，恰为「仓库领先固件」的 `etc/config/auto_upgrade` 与 `usr/share/buffy/auto_upgrade.sh`，其余全部 OK。
+- **待生效**：本轮修复需随下一次 CI 构建（次日 04:00）才进入固件，届时 `/etc/buffy-version` 才会出现在设备上。
+
+**排障副产物**：该路由器 BusyBox **无 `nohup`**（`command -v nohup` 空输出），分离运行必须用 `setsid`（`/usr/bin/setsid` 存在）——`setsid nohup ...` 会因 exec 失败而静默不执行。
+
 # 变更记录（2026-08-23 下午）：路由器侧每日自动升级 + 取消 LuCI 强制 HTTPS
 
 两项需求：①一键升级脚本原本只能在 PC 上运行，现新增路由器侧 auto_upgrade.sh，每日自动检查并升级固件；②LuCI 强制 HTTPS 导致 IP 直访必然报 ERR_CERT_AUTHORITY_INVALID 证书告警，取消强制跳转。

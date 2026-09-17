@@ -5,7 +5,7 @@
 - 设备：京东云 jdcloud_re-cs-07（Qualcomm IPQ60xx 平台，无 WiFi）
 - 目标：`qualcommax/ipq60xx`，aarch64
 - 登录地址：`192.168.1.1`，root 密码由 GitHub Secret `ROUTER_ROOT_PASSWORD` 注入
-- 构建：每 6 小时检查上游 [VIKINGYFY/immortalwrt](https://github.com/VIKINGYFY/immortalwrt)（main 分支），有更新才自动编译并发布 release；旧 release 自动清理只留 5 个
+- 构建：每日凌晨 4:00（北京时间）检查上游 [VIKINGYFY/immortalwrt](https://github.com/VIKINGYFY/immortalwrt)（main 分支），有更新才自动编译并发布 release；旧 release 自动清理只留 5 个
 
 ## 目录结构
 
@@ -50,6 +50,28 @@
 | `proxy_watch.sh` | 每小时代理 204 探测，失败告警（运行中守护） |
 | `cert_check.sh` | 每日证书签发/续期，失败告警 |
 | `first_boot_download.sh` | 首启引导：更新 GEO/白名单/面板，幂等仅执行一次 |
+| `auto_upgrade.sh` | 每日 10:07 检查 GitHub 新 release，自动下载校验并 sysupgrade（见「路由器端自动升级」） |
+
+## 路由器端自动升级
+
+`Files/usr/share/buffy/auto_upgrade.sh` 由 cron 每日 10:07 触发，发现新的 release 后自动下载、校验 sha256 并 sysupgrade 刷入：
+
+- 开关：`/etc/config/auto_upgrade` 的 `enabled`（**默认 1**）；`keep_config=1`（默认）保留配置升级，`0` 则 `sysupgrade -n` 重置
+- 基线：`last_tag` 记录当前运行的 release tag；为空时读固件内 `/etc/buffy-version`（构建期由 `Settings.sh` 写入）作为运行版本，据此判断是否需要升级
+- 校验：读 release 附带的 `SHA256SUMS.txt`（免 GitHub API 限流），sha256 不符即中止；刷机前校验 `board_name`
+- 日志：`/tmp/auto_upgrade.log`；失败与"未启用"都会推 ntfy/Telegram 告警（后者每周一提醒一次）
+- 调试：`AUTO_UPGRADE_DRYRUN=1 /usr/share/buffy/auto_upgrade.sh` 走完整流程但不刷写
+
+```bash
+uci show auto_upgrade                                # 查看开关与基线
+uci set auto_upgrade.@auto_upgrade[0].enabled='1'    # 启用
+uci commit auto_upgrade
+/usr/share/buffy/auto_upgrade.sh                     # 立即执行一次
+```
+
+> 注意：开关存放在 `/etc/config`，该目录会被 `sysupgrade -n`（不保留配置）清空。若某次刷机后不再自动
+> 升级，先查 `/tmp/auto_upgrade.log` 与 `uci show auto_upgrade`（`last_tag` 缺失时脚本会按
+> `/etc/buffy-version` 自愈，无需手工补基线）。
 
 ## 一键升级
 
