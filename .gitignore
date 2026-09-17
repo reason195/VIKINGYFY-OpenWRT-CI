@@ -3,3 +3,7 @@
 # Python 运行产物（单测/工具运行时生成）
 __pycache__/
 *.pyc
+# WorkBuddy 客户端本地数据（工作记忆 .workbuddy-ai/memory、临时脚本 .workbuddy-ai/tmp，均不入库）
+.workbuddy-ai/
+# Mimosa 客户端本地数据（hook 状态 / 审查报告，不入库）
+.mimosa/

@@ -62,7 +62,7 @@ fi
 
 #无WIFI配置标志：
 #WRT_WIFI 已由 WRT-CORE.yml「Initialization Values」单点定义（完整 if/else），此处不再重复赋值，
-#避免同名 GITHUB_ENV 后写覆盖 + 步骤顺序隐式依赖的脆弱设计（仅影响 release 描述文字，见 CODE-REVIEW.md P2-1）
+#避免同名 GITHUB_ENV 后写覆盖 + 步骤顺序隐式依赖的脆弱设计（仅影响 release 描述文字）
 
 #高通平台调整
 DTS_PATH="./target/linux/qualcommax/dts/"
@@ -94,7 +94,7 @@ if [ -d "$GITHUB_WORKSPACE/Files" ]; then
 	#敏感文件权限修正（git 只保留可执行位，需恢复 0600）
 	chmod 600 ./files/etc/shadow ./files/etc/ppp/chap-secrets ./files/etc/buffy-notify.conf 2>/dev/null
 	#脚本执行位兜底：cron 直接执行这些脚本，git 索引漏 644 会烤进固件导致静默失败（rc=126 无告警）；
-	#acme dnsapi 插件同理由 source/直接执行两种加载方式，一并兜底（CODE-REVIEW.md P2-8）
+	#acme dnsapi 插件同理由 source/直接执行两种加载方式，一并兜底
 	chmod +x ./files/usr/share/buffy/*.sh ./files/usr/lib/acme/client/dnsapi/*.sh 2>/dev/null
 fi
 
