@@ -1,3 +1,53 @@
+# 变更记录（2026-09-27 夜）：OpenClash 登录密钥改由包自身生成 + 凭据快照脚本
+
+**需求**：OpenClash 控制台（Dashboard）登录密钥不再由本仓库脚本自造，改由 `luci-app-openclash` 自己生成。
+
+**背景（上游本来就有生成逻辑，我们此前是重复实现）**：包自带 `/etc/uci-defaults/luci-openclash`，其中已有：
+
+```sh
+#Set Dashboard Secret
+if [ -z "$(uci_get_config "dashboard_password")" ]; then
+	uci -q set openclash.config.dashboard_password="$(tr -cd 'a-zA-Z0-9' </dev/urandom 2>/dev/null| head -c8 || date +%N| md5sum |head -c8)"
+fi
+
+#Set Authentication
+if [ -z "$(uci -q get openclash.@authentication[0])" ]; then
+	uci_name_tmp=$(uci -q add openclash authentication)
+	${uci_set}enabled="1" ; ${uci_set}username="Clash" ; ${uci_set}password="<同样随机 8 位>"
+fi
+```
+
+包默认配置 `/etc/config/openclash` 里**不含** `dashboard_password`，也**不含** `authentication` 段 —— 即全新刷机首启必触发上述生成。上游生成同样发生在路由器上（不经过构建期注入），因此“密钥不进 `/rom`”这一目标依旧成立，只是生成方换成了上游。
+
+## 一、`Files/etc/uci-defaults/93-buffy-openclash.sh`：删除自造凭据逻辑
+
+- 删除 `rand_hex()` 函数、`DASH_PW` / `API_PW` 生成、`@authentication` 段创建、`/etc/openclash-credentials.txt` 写入。
+- **同时删除 `uci -q delete openclash.config.dashboard_password`**：本文件以数字开头，在 uci-defaults 里排在 `luci-openclash` **之前**执行；若在这里 delete 或 set 该键，会打断上游“为空才生成”的判断，导致密钥缺失。
+- 改为注释说明“凭据由上游生成”，并保留原有 `uci commit openclash`。
+
+## 二、`Files/usr/share/buffy/export_credentials.sh`（新增）：凭据快照
+
+上游生成后密钥只存在于 uci，没有人类可读的落盘形式（原 `/etc/openclash-credentials.txt` 是随生成逻辑一起没的）。新脚本把**当前生效值**同步到 `/etc/openclash-credentials.txt`（0600），内容含 `dashboard_password` / `api_username` / `api_password` 三项。
+
+- **幂等**：与目标文件内容一致时不写，保持 mtime 稳定，避免无谓的 flash 写入。
+- 两个密钥都读不到（OpenClash 未安装或 uci-defaults 未跑）时返回 `1`，且不产出半截快照文件，避免排障时被误导。
+
+## 三、`Files/etc/rc.local`：每次开机刷新快照
+
+uci-defaults 早于 rc.local 执行，故此处必能读到已生成的密钥；用户在 LuCI 里改过密钥后重启即同步。放在每次启动执行区（不放进 `FLAG` 首次块）。
+
+## 四、`Scripts/verify_flash.py`：校验口径调整
+
+- `@authentication` 的 `username` 不再硬绑 `clash`（那是我们自造时的值），上游默认是 `Clash`；改为「已生成且非空」判断，用户改过也不误报。
+- `dashboard_password` 为空的提示文案改为指向 `luci-app-openclash` 首启生成。
+- `/etc/openclash-credentials.txt` 与 uci 的一致性比对保留（现由 rc.local 侧脚本产出）。
+
+## 五、`Tests/test_export_credentials.sh`（新增）
+
+沙箱回归测试：重写脚本绝对路径到沙箱、`PATH` 前置 mock `uci`（从状态文件读 `key=value`）。5 个用例 18 项断言——首次生成、幂等（内容未变时 mtime 不被刷新）、值变更后同步、凭据缺失时不破坏已有快照、半截凭据。**18 passed / 0 failed**。
+
+**影响面**：密钥强度由自造的 24 位 hex（96 bit）变为上游的 8 位字母数字（≈48 bit）。控制端口 9090 未在 `92-buffy-firewall.sh` 中放行到 WAN，仅内网可达，该强度足够；如需要更长的密钥，可在 LuCI → OpenClash → 覆写设置里手动改。
+
 # 变更记录（2026-09-17 晚）：修复自动升级静默失效——开关被「不保留配置」刷机清空 + 基线自愈
 
 **现象**：今早 06:35 构建的 `26.09.17-06.35.27` 已于 07:14 发布，但路由器 10:07 的 cron 未触发升级；且 `/tmp/auto_upgrade.log` 连续三天（09-15/16/17）只有同一行 `未启用（enabled≠1），退出`，无任何告警。

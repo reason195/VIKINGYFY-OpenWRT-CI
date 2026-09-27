@@ -286,13 +286,15 @@ def check_uci_defaults():
     api_en = d.get(f"{api_sec}.enabled")
     api_user = d.get(f"{api_sec}.username")
     api_pw = d.get(f"{api_sec}.password")
+    # 凭据由 luci-app-openclash 自带 uci-defaults 首启随机生成（本仓库不自造），
+    # 故只校验「已生成且非空」，不绑定具体值（用户可在 LuCI 里改）。
     if not dash_pw:
-        mism.append("dashboard_password: 为空（应首启随机生成）")
-    if api_en != "1" or api_user != "clash" or not api_pw:
+        mism.append("dashboard_password: 为空（luci-app-openclash 首启应生成）")
+    if api_en != "1" or not api_user or not api_pw:
         mism.append(f"authentication: enabled={api_en!r} username={api_user!r} password空={not api_pw}")
     creds, _ = run("cat /etc/openclash-credentials.txt 2>/dev/null", timeout=10)
     if not creds:
-        mism.append("/etc/openclash-credentials.txt: 不存在")
+        mism.append("/etc/openclash-credentials.txt: 不存在（rc.local → export_credentials.sh 应生成）")
     else:
         cred_dash = re.search(r"^dashboard_password: (\S+)$", creds, re.M)
         cred_api = re.search(r"^api_password: (\S+)$", creds, re.M)
