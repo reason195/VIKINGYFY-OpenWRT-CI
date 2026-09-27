@@ -34,7 +34,7 @@
 
 ## 固件内置功能
 
-- **OpenClash**：核心 / 规则集 / GEO / 大陆白名单 / 面板均在构建期预置，刷机首启即用（首启规则集空缓存死锁已修复）；控制台/API 凭据首启随机生成
+- **OpenClash**：核心 / 规则集 / GEO / 大陆白名单 / 面板均在构建期预置，刷机首启即用（首启规则集空缓存死锁已修复）；控制台/API 凭据由 `luci-app-openclash` 首启随机生成，快照见 `/etc/openclash-credentials.txt`
 - **DNS**：dnsmasq 备用上游（223.5.5.5 / 119.29.29.29 / 2400:3200::1）+ fake-ip 分流
 - **DDNS + HTTPS**：DuckDNS DDNS、Let's Encrypt 证书（DNS-01）自动签发/续期、LuCI 强制 HTTPS
 - **防火墙**：IPv6 WAN 放行 SSH/LuCI、wan 区域 forward=DROP、硬件流量卸载
