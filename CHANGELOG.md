@@ -1,3 +1,62 @@
+# 变更记录（2026-09-29 晚）：修复凭据快照开机钩子被 keep.d 静默吞掉 —— 改由 init 脚本投递
+
+**现象**：2026-09-27 的 `3b9a389` 在 `Files/etc/rc.local` 里新增了「每次开机刷新 OpenClash 凭据快照」的调用，固件 `26.09.28-06.47.35` 也已刷入实机，但 `Scripts/verify_flash.py` 第 2 节持续报 `❌ /etc/openclash-credentials.txt: 不存在`。
+
+**定位（2026-09-29 实证）**：改动确实进了镜像，但**投递路径被 sysupgrade 吃掉**。
+
+- 镜像侧没问题：`verify_flash.py` 第 1 节显示 `Files/` 全部逐字节一致（含新增的 `usr/share/buffy/export_credentials.sh` 与新版 `etc/rc.local`）；release 正文的「提交变更」也列出了 `3b9a389`、`49714de`；实机 `/etc/buffy-version` = 该 tag。
+- **根因**：`/etc/rc.local` 位于 `/lib/upgrade/keep.d/base-files-essential`（文件头注释 `# Essential files that will be always kept`），sysupgrade **永久保留**它。实机证据：
+
+  | 层 | 路径 | mtime | 大小 | 含 `export_credentials` 调用 |
+  |---|---|---|---|---|
+  | 出厂 | `/rom/etc/rc.local` | Sep 27 13:12 | 4052 B | 有（第 64 行） |
+  | 运行 | `/etc/rc.local` | **Sep 7 13:10** | 3633 B | **无** |
+
+  `auto_upgrade` 的 `keep_config='1'` 走的正是保留路径 → 新版 rc.local 永远进不了运行层，新增的开机钩子从未执行。
+- 脚本本身无缺陷：手动执行 `/usr/share/buffy/export_credentials.sh` rc=0，产出与 uci 逐项一致；重复执行 mtime 不变（幂等成立）。
+
+**系统性结论**：`/etc/config/*` 同样在 keep.d 内，但它有补偿机制 —— uci-defaults 每次升级都重新投放并再执行一次（实证：运行时 `/etc/uci-defaults/` 已空、`/rom` 侧有全套 47 个脚本，故 `93-buffy-openclash.sh` 的选项在实机上全部生效）。**`/etc/rc.local` 没有对应补偿，是唯一会被 keep.d 静默吃掉的投递方式。**
+
+## 一、`Files/etc/init.d/buffy-credentials`（新增）：凭据快照的正式落点
+
+`/etc/init.d/` 不在 keep.d 内，新文件必然随固件投放。`START=99`，`start()` 调用 `/usr/share/buffy/export_credentials.sh`；`stop()` / `restart()` 沿用 `/etc/rc.common` 默认实现（已核实 `/etc/rc.common:15` 提供 `stop() { return 0; }`）。
+
+## 二、`Files/etc/uci-defaults/94-buffy-credentials.sh`（新增）：负责 enable
+
+`/etc/rc.d/` 同样不在 keep.d 内，sysupgrade 后 overlay 重建会丢掉 enable 软链，必须由 uci-defaults 重建（它每次升级都会重新投放并执行一次）。
+
+- 执行 `/etc/init.d/buffy-credentials enable` —— 唯一必须成功的动作。
+- **顺带立即执行一次快照**：升级路径下 `/etc/config/openclash` 被保留、密钥早已存在 → 升级后首次开机即产出快照，不必等下一次重启（这是本方案优于「挂到 `boot_selfcheck.sh`」之处：后者带 `sleep 120` 前置延迟）。
+- **恒 `exit 0`**：本脚本以数字开头，按 uci-defaults 的 `ls` 字典序排在 `luci-openclash` 之前（`'9' < 'l'`），全新刷机时上游尚未生成密钥、`export_credentials.sh` 返回 1，属预期；若此时非 0 退出，会被 `/etc/init.d/boot` 的 `( . "./$file" ) && applied=...` 判为「未应用」而每次开机重试、反复刷日志。
+
+## 三、`Files/etc/rc.local`：保留调用，但降级为全新刷机路径的兜底
+
+- 注释重写，明确写出「本文件被 keep.d 永久保留，新增开机逻辑请放 `Files/etc/init.d/` 或用 uci-defaults」。
+- 调用行**保留**：全新刷机时 uci-defaults 早于 `luci-openclash` 生成密钥，而 rc.local 由 `/etc/init.d/done`（START=95）执行、晚于全部 uci-defaults，此处必定读到已生成的值。脚本幂等，与 init 脚本重复调用无害。
+
+## 四、`Scripts/verify_flash.py`：新增第 2 节校验项
+
+- `SKIP_ON_ROUTER` 加入 `etc/uci-defaults/94-buffy-credentials.sh`。
+- 新增 `94-buffy-credentials.sh` 检查项：`/etc/init.d/buffy-credentials` 可执行 + `/etc/rc.d/S99buffy-credentials` 软链存在（后者是「`/etc/rc.d/` 不在 keep.d」的直接体现）。
+- 93 检查项中凭据文件缺失的提示文案改为指向新机制。
+
+## 五、`Tests/test_buffy_credentials_init.sh`（新增）
+
+沙箱回归测试：用「最小 rc.common 模拟」驱动真实 init 脚本，用记录型 mock 承接 94 的调用。3 组 18 项断言 —— init 脚本 shebang/`START`/调用链、94 的 enable + 立即执行 + 失败时仍 rc=0 + 重复执行幂等、rc.local 兜底调用不丢失、三个文件均为 LF。**18 passed / 0 failed**。
+
+## 六、真机端到端验证（11/11 通过）
+
+按 uci-defaults 语义在实机执行 `sh /etc/uci-defaults/94-buffy-credentials.sh`（先删除既有快照与软链）：
+
+- 94 脚本 rc=0；`/etc/rc.d/S99buffy-credentials` 建立并指向 `../init.d/buffy-credentials`
+- `/etc/openclash-credentials.txt` 重建（0600），`dashboard_password` / `api_password` 与 uci 逐项一致
+- 删除快照后执行 `/etc/init.d/buffy-credentials start`（由**真实 `/etc/rc.common`** 驱动）→ rc=0、快照重建，证明「每次开机」语义成立
+- 重复执行 mtime 不变（`1790688536 → 1790688536`），幂等成立
+
+**遗留**：`verify_flash.py` 第 1 节对 `etc/rc.local` 报 `FAIL(内容差异)`、对 `etc/init.d/buffy-credentials` 报 `SKIP(路由器无此文件)` —— 这是「仓库领先固件」的预期状态，待下一次构建刷入后自然消解。
+
+**影响面**：不改动 OpenClash 配置项与密钥生成逻辑，仅调整「凭据快照由谁在何时生成」。已刷机的路由器在收到含本改动的固件前，快照仍不会自动刷新（可手动执行 `/usr/share/buffy/export_credentials.sh`）。
+
 # 变更记录（2026-09-27 夜）：OpenClash 登录密钥改由包自身生成 + 凭据快照脚本
 
 **需求**：OpenClash 控制台（Dashboard）登录密钥不再由本仓库脚本自造，改由 `luci-app-openclash` 自己生成。

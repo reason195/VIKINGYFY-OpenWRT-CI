@@ -44,6 +44,7 @@ SKIP_ON_ROUTER = {
     "etc/uci-defaults/91-buffy-uhttpd.sh",
     "etc/uci-defaults/92-buffy-firewall.sh",
     "etc/uci-defaults/93-buffy-openclash.sh",
+    "etc/uci-defaults/94-buffy-credentials.sh",
 }
 
 # 构建期会与软件包默认配置合并/追加的文件：路由器上可能多出重复块或追加的包用户行。
@@ -294,7 +295,8 @@ def check_uci_defaults():
         mism.append(f"authentication: enabled={api_en!r} username={api_user!r} password空={not api_pw}")
     creds, _ = run("cat /etc/openclash-credentials.txt 2>/dev/null", timeout=10)
     if not creds:
-        mism.append("/etc/openclash-credentials.txt: 不存在（rc.local → export_credentials.sh 应生成）")
+        mism.append("/etc/openclash-credentials.txt: 不存在"
+                    "（/etc/init.d/buffy-credentials 每次开机生成，全新刷机首启由 rc.local 兜底）")
     else:
         cred_dash = re.search(r"^dashboard_password: (\S+)$", creds, re.M)
         cred_api = re.search(r"^api_password: (\S+)$", creds, re.M)
@@ -304,6 +306,20 @@ def check_uci_defaults():
             mism.append("credentials 与 uci api_password 不一致")
     ok = not mism
     results.append(("93-buffy-openclash.sh", ok, "全部选项一致" if ok else "; ".join(mism[:5])))
+
+    # 94-buffy-credentials.sh：enable /etc/init.d/buffy-credentials（每次开机刷新凭据快照）。
+    # 背景（2026-09-29 实证）：/etc/rc.local 位于 /lib/upgrade/keep.d/base-files-essential，
+    # sysupgrade 永久保留 → 实机 /etc/rc.local 可能仍是旧版，写在新版 rc.local 里的开机钩子
+    # 在已刷机的路由器上从不执行。故正式落点改为 /etc/init.d/（不在 keep.d，新文件必随固件投放）；
+    # 而 /etc/rc.d/ 同样不在 keep.d，升级后 overlay 重建会丢软链，必须由本 uci-defaults 重建。
+    init_ok, _ = run("test -x /etc/init.d/buffy-credentials && echo ok", timeout=10)
+    link_ok, _ = run("test -L /etc/rc.d/S99buffy-credentials && echo ok", timeout=10)
+    ok = init_ok == "ok" and link_ok == "ok"
+    results.append(("94-buffy-credentials.sh", ok,
+                    "init 脚本可执行、S99 软链已建立" if ok else
+                    f"/etc/init.d/buffy-credentials 可执行={'✓' if init_ok == 'ok' else '✗'} "
+                    f"/etc/rc.d/S99buffy-credentials 软链={'✓' if link_ok == 'ok' else '✗'}"
+                    "（应由 94-buffy-credentials.sh enable 建立）"))
 
     return results
 

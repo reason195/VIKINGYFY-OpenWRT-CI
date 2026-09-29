@@ -60,7 +60,19 @@ chmod 644 /etc/openclash/custom/openclash_custom_fake_filter.list 2>/dev/null
 
 # OpenClash 控制台/API 凭据快照：密钥本体由 luci-app-openclash 自带 uci-defaults 首启随机生成
 # （本仓库不自造，见 93-buffy-openclash.sh），这里只把当前生效值同步到文本文件便于命令行查询。
-# 每次启动都跑：uci-defaults 早于 rc.local，故此处一定读到已生成的值；内容未变则不写。
+#
+# ⚠️ 本文件位于 /lib/upgrade/keep.d/base-files-essential（"Essential files that will be always
+#    kept"），sysupgrade 会**永久保留**它 —— 实机 /etc/rc.local 可能仍是上一版固件的文件，
+#    写在这里的新增调用在「已刷机的路由器」上**不会执行**（2026-09-29 实证：实机
+#    /etc/rc.local mtime 为上一版固件的 Sep 7 13:10、3633 B，不含 export_credentials 调用，
+#    导致 /etc/openclash-credentials.txt 从未生成）。
+#    → 正式的每次开机落点是 /etc/init.d/buffy-credentials（由 94-buffy-credentials.sh enable）。
+#    新增开机逻辑请放 Files/etc/init.d/ 或用 uci-defaults，不要只改本文件。
+#
+# 本行保留只为覆盖**全新刷机**路径：94-buffy-credentials.sh 按 uci-defaults 的 ls 字典序排在
+# luci-openclash 之前（'9' < 'l'），首启时上游还没生成密钥；而本文件由 /etc/init.d/done
+# （START=95）执行，晚于全部 uci-defaults，此处必定读到已生成的值。脚本幂等（内容未变不写），
+# 与 init 脚本重复调用无害。
 /usr/share/buffy/export_credentials.sh >/dev/null 2>&1
 
 # Let's Encrypt 证书后台自愈（首次开机即尝试签发，缺失时由每日 cron 重试）
