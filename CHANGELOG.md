@@ -1,3 +1,9 @@
+# 变更记录（2026-10-07）：旧版 OpenClash Dashboard 密钥迁移到上游默认 8 位生成
+
+**现象**：路由器上的 Dashboard 登录密钥仍为旧版项目脚本生成的 24 位十六进制值。虽然新脚本已交由 OpenClash 默认生成，但升级保留的旧 UCI 值非空，上游只在值为空时生成，因此不会自动切换。
+
+**处理**：`Files/etc/uci-defaults/93-buffy-openclash.sh` 仅识别并删除旧版格式的 24 位十六进制 Dashboard 密钥；随后由排在它之后运行的 `luci-openclash` 生成默认 8 位随机字母数字密钥。其他格式的用户自定义密钥和 API 认证配置保持不变。
+
 # 变更记录（2026-09-29 晚）：修复凭据快照开机钩子被 keep.d 静默吞掉 —— 改由 init 脚本投递
 
 **现象**：2026-09-27 的 `3b9a389` 在 `Files/etc/rc.local` 里新增了「每次开机刷新 OpenClash 凭据快照」的调用，固件 `26.09.28-06.47.35` 也已刷入实机，但 `Scripts/verify_flash.py` 第 2 节持续报 `❌ /etc/openclash-credentials.txt: 不存在`。

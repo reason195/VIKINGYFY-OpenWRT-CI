@@ -72,13 +72,17 @@ uci set openclash.config.disable_quic_go_gso='1'
 uci -q delete openclash.config.default_dashboard
 uci set openclash.config.default_dashboard='zashboard'
 
-# 控制台/Dashboard 登录密钥（dashboard_password）与 clash API 认证（@authentication）
-# 一律不在此设置 —— 交给 luci-app-openclash 包自带的 /etc/uci-defaults/luci-openclash
-# 首启自动生成（各 8 位随机字母数字），理由：
-#   1) 上游本就有生成逻辑，我们自造一份属于重复实现，且会抢先占位把上游的值顶掉；
-#   2) 上游生成位置就是 uci 本体，不经过构建期注入 → 同样不会把固定明文烤进 /rom；
-#   3) 本文件（数字开头）在 uci-defaults 里排在 luci-openclash 之前执行，
-#      所以这里绝不能 delete 或 set 这两个键，否则会打断上游的「为空才生成」判断。
+# 迁移旧版曾生成的 24 位十六进制 Dashboard 密钥：清空后由后续执行的
+# luci-app-openclash 自带 uci-defaults 生成默认 8 位随机字母数字密钥。
+# 仅匹配旧版格式，保留用户手动设置的其他长度/格式；API 认证仍完全交给上游管理。
+DASH_PW="$(uci -q get openclash.config.dashboard_password)"
+case "$DASH_PW" in
+	*[!0-9a-fA-F]*|'') ;;
+	*) [ "${#DASH_PW}" -eq 24 ] && uci -q delete openclash.config.dashboard_password ;;
+esac
+
+# 其余 Dashboard/API 凭据由 luci-app-openclash 自带的 /etc/uci-defaults/luci-openclash
+# 首启生成。此文件在其之前执行，因此这里清除旧版密钥后，上游会按默认逻辑补上 8 位值。
 # 查询：LuCI → OpenClash → 覆写设置；或 uci show openclash | grep -E 'dashboard_password|authentication'
 # 快照：/etc/rc.local 每次开机调 /usr/share/buffy/export_credentials.sh 同步到
 #      /etc/openclash-credentials.txt，便于命令行查看当前生效值。
