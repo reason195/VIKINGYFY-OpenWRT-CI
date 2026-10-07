@@ -27,8 +27,10 @@ on:
         required: false
         type: boolean
 
-#CI权限
-permissions: write-all
+# 默认只读；只有发布构建 job 需要写入 release 与清理缓存。
+permissions:
+  contents: read
+  actions: read
 
 #CI并发：定时 + 手动触发串行化，防止并发构建对同一 release 前缀产生竞态（PREV_TAG 漂移/发布交叉）
 concurrency:
@@ -41,10 +43,8 @@ jobs:
   check:
     name: Check Source Update
     runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-      # check job 无 checkout，gh 无法从 git remote 解析仓库，必须显式指定
-      GH_REPO: ${{github.repository}}
+    permissions:
+      contents: read
     outputs:
       skip: ${{steps.compare.outputs.skip}}
     steps:
@@ -54,12 +54,16 @@ jobs:
         #获取失败时继续，按有更新处理
         if: github.event_name == 'schedule' || github.event.inputs.CHECK_ONLY == 'true'
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{github.token}}
         run: |
           echo "sha=$(gh api repos/VIKINGYFY/immortalwrt/commits/main --jq .sha)" >> $GITHUB_OUTPUT
       - name: Get Last Built Commit
         id: last
         if: github.event_name == 'schedule' || github.event.inputs.CHECK_ONLY == 'true'
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{github.token}}
         run: |
           # 本项目仅构建 jdcloud_re-cs-07（IPQ60XX-WIFI-NO），与下方 config job 保持一致
           LAST_TAG=$(gh release list --limit 30 --json tagName -q '.[].tagName' | grep '^IPQ60XX-WIFI-NO-VIKINGYFY-main-' | head -n 1)
@@ -70,6 +74,8 @@ jobs:
           fi
       - name: Compare
         id: compare
+        env:
+          GH_TOKEN: ${{github.token}}
         run: |
           echo "CHECK_ONLY input = ${{github.event.inputs.CHECK_ONLY}}"
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{github.event.inputs.CHECK_ONLY}}" != "true" ]]; then
@@ -109,8 +115,22 @@ jobs:
 
     #调用公用编译核心WRT-CORE.yml
     uses: ./.github/workflows/WRT-CORE.yml
-    #继承仓库 secrets（构建时注入敏感配置）
-    secrets: inherit
+    permissions:
+      contents: write
+      actions: write
+    # 只传递构建实际需要的 Secrets；WRT-CORE 再按步骤提供给注入脚本。
+    secrets:
+      MAIN_AIRPORT_SUB: ${{secrets.MAIN_AIRPORT_SUB}}
+      BACKUP_AIRPORT_SUB: ${{secrets.BACKUP_AIRPORT_SUB}}
+      DDNS_TOKEN: ${{secrets.DDNS_TOKEN}}
+      HP_ADDRESS: ${{secrets.HP_ADDRESS}}
+      HP_UUID: ${{secrets.HP_UUID}}
+      PPPOE_USERNAME: ${{secrets.PPPOE_USERNAME}}
+      PPPOE_PASSWORD: ${{secrets.PPPOE_PASSWORD}}
+      ROUTER_ROOT_PASSWORD: ${{secrets.ROUTER_ROOT_PASSWORD}}
+      TELEGRAM_BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
+      TELEGRAM_CHAT_ID: ${{secrets.TELEGRAM_CHAT_ID}}
+      SINGBOX_SS_PASSWORD: ${{secrets.SINGBOX_SS_PASSWORD}}
     with:
       #编译配置（本项目仅构建 jdcloud_re-cs-07）
       WRT_CONFIG: IPQ60XX-WIFI-NO
@@ -141,15 +161,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: config
     if: github.event_name == 'schedule' && (needs.config.result == 'success' || needs.config.result == 'failure')
-    env:
-      GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-      # notify job 无 checkout，gh 需显式指定仓库
-      GH_REPO: ${{github.repository}}
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Send Telegram Notification
         # env 上下文不能用于 if 条件，未配置 secret 时在脚本内跳过
         continue-on-error: true
         env:
+          GH_TOKEN: ${{github.token}}
+          GH_REPO: ${{github.repository}}
           TELEGRAM_BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
           TELEGRAM_CHAT_ID: ${{secrets.TELEGRAM_CHAT_ID}}
         run: |

@@ -40,20 +40,35 @@ on:
       WRT_TEST:
         required: false
         type: string
+    secrets:
+      MAIN_AIRPORT_SUB:
+        required: true
+      BACKUP_AIRPORT_SUB:
+        required: true
+      DDNS_TOKEN:
+        required: true
+      HP_ADDRESS:
+        required: true
+      HP_UUID:
+        required: true
+      PPPOE_USERNAME:
+        required: true
+      PPPOE_PASSWORD:
+        required: true
+      ROUTER_ROOT_PASSWORD:
+        required: true
+      TELEGRAM_BOT_TOKEN:
+        required: false
+      TELEGRAM_CHAT_ID:
+        required: false
+      SINGBOX_SS_PASSWORD:
+        required: false
+
+permissions:
+  contents: write
+  actions: write
 
 env:
-  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-  MAIN_AIRPORT_SUB: ${{secrets.MAIN_AIRPORT_SUB}}
-  BACKUP_AIRPORT_SUB: ${{secrets.BACKUP_AIRPORT_SUB}}
-  DDNS_TOKEN: ${{secrets.DDNS_TOKEN}}
-  HP_ADDRESS: ${{secrets.HP_ADDRESS}}
-  HP_UUID: ${{secrets.HP_UUID}}
-  PPPOE_USERNAME: ${{secrets.PPPOE_USERNAME}}
-  PPPOE_PASSWORD: ${{secrets.PPPOE_PASSWORD}}
-  ROUTER_ROOT_PASSWORD: ${{secrets.ROUTER_ROOT_PASSWORD}}
-  TELEGRAM_BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
-  TELEGRAM_CHAT_ID: ${{secrets.TELEGRAM_CHAT_ID}}
-  SINGBOX_SS_PASSWORD: ${{secrets.SINGBOX_SS_PASSWORD}}
   WRT_CONFIG: ${{inputs.WRT_CONFIG}}
   WRT_THEME: ${{inputs.WRT_THEME}}
   WRT_NAME: ${{inputs.WRT_NAME}}
@@ -141,6 +156,8 @@ jobs:
 
       - name: Update Caches
         if: env.WRT_TEST != 'true'
+        env:
+          GH_TOKEN: ${{github.token}}
         run: |
           if [ -d "./wrt/staging_dir" ]; then
             find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
@@ -176,6 +193,9 @@ jobs:
 
           $GITHUB_WORKSPACE/Scripts/Packages.sh
           $GITHUB_WORKSPACE/Scripts/Handles.sh
+        env:
+          MAIN_AIRPORT_SUB: ${{secrets.MAIN_AIRPORT_SUB}}
+          BACKUP_AIRPORT_SUB: ${{secrets.BACKUP_AIRPORT_SUB}}
 
       - name: Custom Settings
         run: |
@@ -190,6 +210,16 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
           make defconfig -j$(nproc) && make clean -j$(nproc)
+        env:
+          DDNS_TOKEN: ${{secrets.DDNS_TOKEN}}
+          HP_ADDRESS: ${{secrets.HP_ADDRESS}}
+          HP_UUID: ${{secrets.HP_UUID}}
+          PPPOE_USERNAME: ${{secrets.PPPOE_USERNAME}}
+          PPPOE_PASSWORD: ${{secrets.PPPOE_PASSWORD}}
+          ROUTER_ROOT_PASSWORD: ${{secrets.ROUTER_ROOT_PASSWORD}}
+          TELEGRAM_BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
+          TELEGRAM_CHAT_ID: ${{secrets.TELEGRAM_CHAT_ID}}
+          SINGBOX_SS_PASSWORD: ${{secrets.SINGBOX_SS_PASSWORD}}
 
       - name: Download Packages
         if: env.WRT_TEST != 'true'
@@ -243,6 +273,8 @@ jobs:
           fi
 
       - name: Generate Release Changelog
+        env:
+          GH_TOKEN: ${{github.token}}
         run: |
           # 列出本仓库（CI 配置）自上一个同配置 release 以来的提交，使描述随每次发布更新
           git fetch --tags --force origin >/dev/null 2>&1 || true
