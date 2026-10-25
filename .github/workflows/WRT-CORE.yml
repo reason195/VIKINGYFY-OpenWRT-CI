@@ -117,6 +117,8 @@ jobs:
           echo "WRT_MARK=${GITHUB_REPOSITORY%%/*}" >> $GITHUB_ENV
           echo "WRT_INFO=${WRT_SOURCE%%/*}" >> $GITHUB_ENV
           echo "WRT_TARGET=$(grep -m 1 -oP '^CONFIG_TARGET_\K[\w]+(?=\=y)' ./Config/$WRT_CONFIG.txt)" >> $GITHUB_ENV
+          # 从设备列表提取具体设备名（如 jdcloud_re-cs-07），release 正文显示用
+          echo "WRT_DEVICE=$(grep -m 1 -oP '^CONFIG_TARGET_DEVICE_.*_DEVICE_\K.+(?=\=y)' ./Config/$WRT_CONFIG.txt)" >> $GITHUB_ENV
           # 根据配置名推导 WIFI 类型：WIFI-NO 配置（如 IPQ60XX-WIFI-NO）release 不显示 WIFI 名称/密码
           if [[ "${WRT_CONFIG,,}" == *"wifi-no"* ]]; then
             echo "WRT_WIFI=wifi-no" >> $GITHUB_ENV
@@ -344,11 +346,11 @@ jobs:
           tag_name: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}
           files: ./wrt/upload/*.*
           body: |
-            这是个平台固件包，内含多个设备！
-            请注意选择你需要的设备固件！
+            这是 ${{env.WRT_DEVICE}} 单设备固件包！
+            刷机前请确认设备型号与下方配置相符！
             不要问，刷就完事了！
 
-            全系带开源硬件加速，别问了！
+            开源硬件加速已内置，别问了！
 
             源码：${{env.WRT_REPO}}
             分支：${{env.WRT_BRANCH}}
@@ -356,6 +358,7 @@ jobs:
 
             配置：${{env.WRT_CONFIG}}
             平台：${{env.WRT_TARGET}}
+            设备：${{env.WRT_DEVICE}}
 
             登录地址：${{env.WRT_IP}}
             登录密码：由 GitHub Secret 注入（不对外公开）
