@@ -50,9 +50,8 @@ jobs:
     steps:
       - name: Get Upstream Commit
         id: upstream
-        #定时/仅检查时获取上游最新提交；手动触发（非仅检查）无需检查直接编译
+        #所有触发方式都获取上游最新提交（手动触发也检查，结果仅记录不拦截）
         #获取失败时继续，按有更新处理
-        if: github.event_name == 'schedule' || github.event.inputs.CHECK_ONLY == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{github.token}}
@@ -60,7 +59,6 @@ jobs:
           echo "sha=$(gh api repos/VIKINGYFY/immortalwrt/commits/main --jq .sha)" >> $GITHUB_OUTPUT
       - name: Get Last Built Commit
         id: last
-        if: github.event_name == 'schedule' || github.event.inputs.CHECK_ONLY == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{github.token}}
@@ -78,34 +76,40 @@ jobs:
           GH_TOKEN: ${{github.token}}
         run: |
           echo "CHECK_ONLY input = ${{github.event.inputs.CHECK_ONLY}}"
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{github.event.inputs.CHECK_ONLY}}" != "true" ]]; then
-            echo "手动触发，开始编译！"
-            echo "skip=false" >> $GITHUB_OUTPUT
-          else
-            UP_SHA="${{steps.upstream.outputs.sha}}"
-            LAST_SHA="${{steps.last.outputs.sha}}"
-            if [ -n "$LAST_SHA" ] && [ -n "$UP_SHA" ]; then
-              # 短哈希先解析为完整 SHA，再走 compare API 判断（可正确处理 force-push/分叉）
-              FULL_SHA=$(gh api "repos/VIKINGYFY/immortalwrt/commits/$LAST_SHA" --jq .sha 2>/dev/null)
-              if [ -n "$FULL_SHA" ]; then
-                READ=$(gh api "repos/VIKINGYFY/immortalwrt/compare/$FULL_SHA...$UP_SHA" --jq '.status + " " + (.ahead_by|tostring)' 2>/dev/null)
-                STATUS=${READ%% *}
-                AHEAD=${READ##* }
-                if [ "$STATUS" = "identical" ]; then
-                  echo "上游源码无更新，跳过编译！"
-                  echo "skip=true" >> $GITHUB_OUTPUT
-                else
-                  echo "检测到上游源码更新（+${AHEAD:-?} 提交），开始编译！"
-                  echo "skip=false" >> $GITHUB_OUTPUT
-                fi
+          # 先统一对比并记录检查结论，再按触发方式决定是否跳过
+          UP_SHA="${{steps.upstream.outputs.sha}}"
+          LAST_SHA="${{steps.last.outputs.sha}}"
+          UPDATE=yes
+          if [ -n "$LAST_SHA" ] && [ -n "$UP_SHA" ]; then
+            # 短哈希先解析为完整 SHA，再走 compare API 判断（可正确处理 force-push/分叉）
+            FULL_SHA=$(gh api "repos/VIKINGYFY/immortalwrt/commits/$LAST_SHA" --jq .sha 2>/dev/null)
+            if [ -n "$FULL_SHA" ]; then
+              READ=$(gh api "repos/VIKINGYFY/immortalwrt/compare/$FULL_SHA...$UP_SHA" --jq '.status + " " + (.ahead_by|tostring)' 2>/dev/null)
+              STATUS=${READ%% *}
+              AHEAD=${READ##* }
+              if [ "$STATUS" = "identical" ]; then
+                UPDATE=none
+                echo "检查结果：上游源码无更新！"
               else
-                echo "上次构建哈希解析失败，按有更新处理，开始编译！"
-                echo "skip=false" >> $GITHUB_OUTPUT
+                echo "检查结果：检测到上游源码更新（+${AHEAD:-?} 提交）！"
               fi
             else
-              echo "无法获取哈希，按有更新处理，开始编译！"
-              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "检查结果：上次构建哈希解析失败，按有更新处理！"
             fi
+          else
+            echo "检查结果：无法获取哈希，按有更新处理！"
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "${{github.event.inputs.CHECK_ONLY}}" != "true" ]]; then
+            # 手动触发保留强制编译：检查结论仅记录到日志，不作为跳过依据
+            echo "手动触发，无论检查结论如何均开始编译！"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          elif [ "$UPDATE" = "none" ]; then
+            echo "定时/仅检查：上游无更新，跳过编译！"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "定时/仅检查：检测到更新，开始编译！"
+            echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
   config:
