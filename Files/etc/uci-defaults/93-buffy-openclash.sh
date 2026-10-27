@@ -74,17 +74,38 @@ uci set openclash.config.default_dashboard='zashboard'
 
 # 迁移旧版曾生成的 24 位十六进制 Dashboard 密钥：清空后由后续执行的
 # luci-app-openclash 自带 uci-defaults 生成默认 8 位随机字母数字密钥。
-# 仅匹配旧版格式，保留用户手动设置的其他长度/格式；API 认证仍完全交给上游管理。
+# 仅匹配旧版格式，保留用户手动设置的其他长度/格式。
 DASH_PW="$(uci -q get openclash.config.dashboard_password)"
 case "$DASH_PW" in
 	*[!0-9a-fA-F]*|'') ;;
 	*) [ "${#DASH_PW}" -eq 24 ] && uci -q delete openclash.config.dashboard_password ;;
 esac
 
-# 其余 Dashboard/API 凭据由 luci-app-openclash 自带的 /etc/uci-defaults/luci-openclash
-# 首启生成。此文件在其之前执行，因此这里清除旧版密钥后，上游会按默认逻辑补上 8 位值。
+# 迁移旧版仓库自造的 SOCKS5/HTTP(S) 认证段（openclash.@authentication）。
+# 旧版生成 username='clash'（小写）+ 24 位十六进制口令；上游 luci-openclash 只在
+# 「该段完全不存在」时生成默认值（username='Clash' + 8 位随机字母数字），旧段只要存在
+# 就永远占位、认证信息无法回到上游生成。两个特征同时命中才删（改过名或口令的一律视为
+# 用户自定义并保留），删除后由排在本文件之后的 luci-openclash 重新生成。
+_i=0
+while _sec="$(uci -q get "openclash.@authentication[$_i]")" && [ -n "$_sec" ]; do
+	_u="$(uci -q get "openclash.@authentication[$_i].username")"
+	_p="$(uci -q get "openclash.@authentication[$_i].password")"
+	if [ "$_u" = "clash" ]; then
+		case "$_p" in
+			*[!0-9a-fA-F]*|'') ;;
+			*) [ "${#_p}" -eq 24 ] && uci -q delete "openclash.@authentication[$_i]" ;;
+		esac
+	fi
+	# 删除后后续段前移填补当前下标，故仅在本下标未被腾空时递增
+	[ "$(uci -q get "openclash.@authentication[$_i]")" = "$_sec" ] && _i=$((_i + 1))
+done
+unset _i _sec _u _p
+
+# Dashboard 密钥与 SOCKS5/HTTP(S) 认证（@authentication）均由 luci-app-openclash 自带的
+# /etc/uci-defaults/luci-openclash 首启生成。本文件在其之前执行，上面两段迁移清除旧版
+# 自造值后，上游才会按「为空/无段」判断补上默认 8 位随机值。
 # 查询：LuCI → OpenClash → 覆写设置；或 uci show openclash | grep -E 'dashboard_password|authentication'
-# 快照：/etc/rc.local 每次开机调 /usr/share/buffy/export_credentials.sh 同步到
+# 快照：/etc/init.d/buffy-credentials 每次开机调 /usr/share/buffy/export_credentials.sh 同步到
 #      /etc/openclash-credentials.txt，便于命令行查看当前生效值。
 uci commit openclash
 exit 0

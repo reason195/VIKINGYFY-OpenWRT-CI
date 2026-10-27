@@ -1,3 +1,25 @@
+# 变更记录（2026-10-27）：SOCKS5/HTTP(S) 认证恢复由 OpenClash 自己生成
+
+**现象**：路由器上 OpenClash 的代理认证（`openclash.@authentication`）仍为旧版仓库脚本自造的值——`username=clash`（小写）+ 24 位十六进制口令；而 Dashboard 密钥已在 2026-10-07 迁移到上游默认的 8 位随机值。两者不一致，认证信息没有回到 OpenClash 自己生成。
+
+**根因**：上游 `luci-app-openclash` 的 `/etc/uci-defaults/luci-openclash` 只在 **`openclash.@authentication[0]` 完全不存在** 时才生成（`username="Clash"` + 8 位随机字母数字）。升级保留的旧 UCI 段非空，判断直接跳过 → 旧口令永久生效。Dashboard 密钥可用「值为空」判断，认证段只能用「段是否存在」判断，所以 10-07 的迁移对认证段无效。
+
+## 一、`Files/etc/uci-defaults/93-buffy-openclash.sh`：新增认证段迁移
+
+- 循环遍历 `@authentication[N]`，仅在 **两个特征同时命中** 时删除该段：用户名恰为 `clash`（上游默认是 `Clash`）且口令为 24 位十六进制（旧版 `rand_hex()` 产物）。用户改过名或口令的一律视为自定义值保留。
+- 删除后由排在它之后的 `luci-openclash` 按上游默认逻辑重建（小写 `clash` 段删除、后续段下标前移的处理已在循环内考虑）。
+- 本文件以数字开头、先于 `luci-openclash` 执行，这正是「先清旧值、让上游补生成」能成立的前提。
+
+## 二、`Scripts/verify_flash.py`：旧值残留检测
+
+第 2 节原有的「认证已生成且非空」校验挡不住旧值，新增一条：`username=clash` 且口令为 24 位 hex 时明确报「仍为旧版自造值，迁移未生效」，避免静默通过。
+
+## 三、`Tests/test_openclash_auth_migration.sh`（新增）
+
+沙箱测试：mock uci 支持 `get/set/delete/commit` 与 `@section[N]` 删除后的下标前移，直接运行真实的 93 脚本。7 个用例 25 项断言——旧值清除且无关配置保留、上游默认值不动、用户自定义口令保留、旧段与用户段共存时只删旧段且用户段完整前移、无段不凭空生成、二次执行幂等、Dashboard 密钥迁移回归。**25 passed / 0 failed**。
+
+**影响面**：已刷旧固件的路由器在首次升级到含本改动的固件后，认证口令会由旧 24 位 hex 变为上游新生成的 8 位随机值，使用 `clash:旧口令` 配置的 SOCKS5/HTTP(S) 客户端需重新填写；新值见 `/etc/openclash-credentials.txt` 的 `api_username` / `api_password`。全新刷机路径不变（本来就由上游生成）。
+
 # 变更记录（2026-10-25）：手动触发也执行上游更新检查（结论仅记录，仍强制编译）
 
 **现象**：手动触发（`workflow_dispatch`）此前完全跳过上游检查直接编译，运行日志里看不到「本次构建相对上次发布的上游状态」，与定时任务的检查链路不一致。

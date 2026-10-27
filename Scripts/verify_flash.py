@@ -293,6 +293,11 @@ def check_uci_defaults():
         mism.append("dashboard_password: 为空（luci-app-openclash 首启应生成）")
     if api_en != "1" or not api_user or not api_pw:
         mism.append(f"authentication: enabled={api_en!r} username={api_user!r} password空={not api_pw}")
+    # 旧版仓库脚本自造值为 username=clash（小写）+ 24 位 hex；非空校验挡不住它，
+    # 而该值存在会让上游永不重新生成，故单独提示迁移（93-buffy-openclash.sh）未生效。
+    if api_user == "clash" and re.fullmatch(r"[0-9a-fA-F]{24}", api_pw or ""):
+        mism.append("authentication: 仍为旧版自造值（clash + 24 位 hex），"
+                    "93-buffy-openclash.sh 的迁移未生效")
     creds, _ = run("cat /etc/openclash-credentials.txt 2>/dev/null", timeout=10)
     if not creds:
         mism.append("/etc/openclash-credentials.txt: 不存在"
