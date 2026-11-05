@@ -4,9 +4,10 @@
 # upgrade_firmware.py — 一键下载 GitHub latest release 的 sysupgrade 固件、校验 sha256、sysupgrade 刷入。
 #
 # 用法：
-#   python3 Scripts/upgrade_firmware.py                     # 默认 192.168.1.1 root/root，保留配置升级
+#   python3 Scripts/upgrade_firmware.py                     # 默认 192.168.1.1 root/root，不保留配置刷机（sysupgrade -n）
 #   python3 Scripts/upgrade_firmware.py --dry-run           # 只下载+校验，不连路由器、不刷机
-#   python3 Scripts/upgrade_firmware.py --reset --yes       # 重置配置(sysupgrade -n)升级，跳过确认
+#   python3 Scripts/upgrade_firmware.py --yes               # 不保留配置刷机（sysupgrade -n），跳过确认
+#   python3 Scripts/upgrade_firmware.py --keep-config       # 改回保留配置升级（/etc 覆盖层不清空）
 #   python3 Scripts/upgrade_firmware.py --tag IPQ60XX-WIFI-NO-VIKINGYFY-main-26.08.17-00.13.34
 #   ROUTER_HOST=10.0.0.1 ROUTER_PASSWORD=xxx python3 Scripts/upgrade_firmware.py
 #
@@ -312,13 +313,15 @@ def main():
     ap.add_argument("--tag", default=None, help="指定 release 标签（默认取最新匹配前缀的 release）")
     ap.add_argument("--device", default=DEFAULT_DEVICE, help="release 资产文件名中的设备段")
     ap.add_argument("--board", default=DEFAULT_BOARD, help="路由器 /tmp/sysinfo/board_name（刷机前校验）")
-    ap.add_argument("--reset", action="store_true", help="sysupgrade -n：不保留配置（重新应用固件内置配置）")
+    ap.add_argument("--keep-config", action="store_true",
+                    help="保留当前配置升级；默认不保留（sysupgrade -n，刷后重新应用固件内置配置）")
     ap.add_argument("--yes", action="store_true", help="跳过刷机确认")
     ap.add_argument("--dry-run", action="store_true", help="只下载+校验 sha256，不连路由器、不刷机")
     ap.add_argument("--wait-timeout", type=int, default=300, help="重启等待上限（秒，默认 300）")
     ap.add_argument("--selfcheck-timeout", type=int, default=720, help="开机自检等待上限（秒，默认 720）")
     ap.add_argument("--no-verify", action="store_true", help="刷机后不等待重启、不运行 verify_flash.py 复验")
     args = ap.parse_args()
+    reset = not args.keep_config  # 默认不保留配置刷机
 
     log(f"== 查询 {args.repo} 最新 release ==")
     try:
@@ -371,8 +374,8 @@ def main():
         log("✅ sha256 校验通过")
 
         if args.dry_run:
-            flag = "-n " if args.reset else ""
-            log(f"\n[dry-run] 将执行：sysupgrade {flag}/tmp/fw-upgrade.bin（{'重置' if args.reset else '保留'}配置）")
+            flag = "-n " if reset else ""
+            log(f"\n[dry-run] 将执行：sysupgrade {flag}/tmp/fw-upgrade.bin（{'重置' if reset else '保留'}配置）")
             log("[dry-run] 未连接路由器、未刷机。去掉 --dry-run 即可一键升级。")
             return 0
 
@@ -400,16 +403,19 @@ def main():
         log("✅ 路由器侧 sha256 校验通过")
 
         log("\n== 刷机 ==")
-        log(f"  命令: sysupgrade {'-n ' if args.reset else ''}{remote}")
-        log("  说明: " + ("重置配置（-n），重刷后重新应用固件内置配置" if args.reset else "保留当前配置升级（不重新应用固件内置配置）"))
+        log(f"  命令: sysupgrade {'-n ' if reset else ''}{remote}")
+        if reset:
+            log("  说明: 不保留配置（-n），路由器 /etc 覆盖层清空后改用固件内置配置；备份：sysupgrade -b /tmp/backup.tar.gz")
+        else:
+            log("  说明: 保留当前配置升级（不重新应用固件内置配置）")
         if not args.yes:
-            ans = input("  确认刷机？路由器将重启并断网约 1-3 分钟 [y/N]: ").strip().lower()
+            ans = input("  确认刷机？（{}）路由器将重启并断网约 1-3 分钟 [y/N]: ".format("不保留配置" if reset else "保留配置")).strip().lower()
             if ans not in ("y", "yes"):
                 log("已取消。")
                 return 0
         uptime_before = router_uptime(cli)
         log("  触发 sysupgrade ...")
-        out = trigger_sysupgrade(cli, remote, args.reset)
+        out = trigger_sysupgrade(cli, remote, reset)
         if out:
             log(out)
         cli.close()

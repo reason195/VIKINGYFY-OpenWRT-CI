@@ -1,3 +1,31 @@
+# 变更记录（2026-11-05）：刷机默认不保留配置（sysupgrade -n）
+
+**诉求**：下次刷机不保留配置。此前两条刷机路径（PC 端 `upgrade_firmware.py`、路由器端 cron `auto_upgrade.sh`）默认都是「保留配置」，而保留路径有个已知死结：`/etc/rc.local` 在 `/lib/upgrade/keep.d/base-files-essential` 的永久保留清单里，保留升级会让它停在旧固件版本、新版的开机钩子永远进不了运行层（2026-09-29 实证）。改成默认不保留，镜像里的 `/etc` 才真正生效。
+
+## 一、`Scripts/upgrade_firmware.py`：`--reset` 删除，重置成默认，新增 `--keep-config`
+
+- 同一根轴上只留一个开关：不带参数即 `sysupgrade -n`，`--keep-config` 才走保留路径。旧的 `--reset` 直接删除，误传会被 argparse 拒掉（`unrecognized arguments: --reset`）并在刷机前退出，不会静默按旧语义执行。
+- 刷机确认语与 dry-run 输出都会打印实际模式；重置提示里附备份命令 `sysupgrade -b /tmp/backup.tar.gz`（脚本本身不自动备份）。
+
+## 二、路由器端 `auto_upgrade`：出厂默认 `keep_config '0'`
+
+- `Files/etc/config/auto_upgrade`：`keep_config` 由 `1` 改 `0`，注释写明理由与手工改回的命令。
+- `Files/usr/share/buffy/auto_upgrade.sh`：判定从「`=0` 才加 `-n`」翻转为「只有 `=1` 才保留」——选项缺失、为空或任意非 1 值一律按 `-n` 处理。配置段缺失的自愈重建同步改为 `keep_config=0`，否则一次 `-n` 刷机清空 `/etc/config` 后，脚本会把旧默认 `1` 补回去，改动当场失效。
+- 模式判定上移到流程早期（下载之前）并 `log "刷机模式：…"`，删除 sha256 通过后那段重复推导；原先只有真刷机才看得到模式，现在日志里每次运行都有。
+
+## 三、测试
+
+- `Tests/test_auto_upgrade.sh`：新增用例 7（`keep_config` 为 0／空／非 1 值 → 重置模式），用例 1 补保留模式断言，用例 6 补「重建的默认值不保留配置」断言。**25 passed / 0 failed**（原 20）。
+- `Tests/test_upgrade_firmware.py`：新增 `FlashModeDefaultTest`（dry-run 默认输出 `sysupgrade -n`、`--keep-config` 去掉 `-n`、`--reset` 被拒）。**28 passed / 0 failed**（原 25）。
+
+## 四、生效时点（重要）
+
+- PC 端脚本改完即刻生效；路由器端 cron 用的是**设备上正在运行**的那份脚本，因此要等刷入含本改动的镜像后，cron 才按新默认走。当前实机跑 26.11.05 镜像（内置旧默认 `keep_config=1`），明天的自动升级仍是保留配置。
+- 想让下一次自动升级就不保留配置，需在路由器上把运行值改掉（不涉及刷机）：`uci set auto_upgrade.@auto_upgrade[0].keep_config='0' && uci commit auto_upgrade`。
+- 附注：本次会话中一次 `sysupgrade -n` 重刷已下发并重启完成（同一版本 26.11.05-08.44.17），刷机前配置备份在 `~/backups/buffy-config-26.11.05.tar.gz`（sha256 `a4f972010b67a02e5c3e5c40c7b7c74b1b579f5ba45cdd6f42bc86957ae7c32d`）。
+
+
+
 # 变更记录（2026-10-27）：SOCKS5/HTTP(S) 认证恢复由 OpenClash 自己生成
 
 **现象**：路由器上 OpenClash 的代理认证（`openclash.@authentication`）仍为旧版仓库脚本自造的值——`username=clash`（小写）+ 24 位十六进制口令；而 Dashboard 密钥已在 2026-10-07 迁移到上游默认的 8 位随机值。两者不一致，认证信息没有回到 OpenClash 自己生成。

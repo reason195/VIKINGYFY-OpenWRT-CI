@@ -56,7 +56,7 @@
 
 `Files/usr/share/buffy/auto_upgrade.sh` 由 cron 每日 10:07 触发，发现新的 release 后自动下载、校验 sha256 并 sysupgrade 刷入：
 
-- 开关：`/etc/config/auto_upgrade` 的 `enabled`（**默认 1**）；`keep_config=1`（默认）保留配置升级，`0` 则 `sysupgrade -n` 重置
+- 开关：`/etc/config/auto_upgrade` 的 `enabled`（**默认 1**）；`keep_config=0`（**默认**）→ `sysupgrade -n` **不保留配置刷机**，改为 `1` 才保留
 - 基线：`last_tag` 记录当前运行的 release tag；为空时读固件内 `/etc/buffy-version`（构建期由 `Settings.sh` 写入）作为运行版本，据此判断是否需要升级
 - 校验：读 release 附带的 `SHA256SUMS.txt`（免 GitHub API 限流），sha256 不符即中止；刷机前校验 `board_name`
 - 日志：`/tmp/auto_upgrade.log`；失败与"未启用"都会推 ntfy/Telegram 告警（后者每周一提醒一次）
@@ -69,9 +69,12 @@ uci commit auto_upgrade
 /usr/share/buffy/auto_upgrade.sh                     # 立即执行一次
 ```
 
-> 注意：开关存放在 `/etc/config`，该目录会被 `sysupgrade -n`（不保留配置）清空。若某次刷机后不再自动
-> 升级，先查 `/tmp/auto_upgrade.log` 与 `uci show auto_upgrade`（`last_tag` 缺失时脚本会按
-> `/etc/buffy-version` 自愈，无需手工补基线）。
+> 为什么默认不保留配置：`/etc/rc.local` 在 `/lib/upgrade/keep.d/base-files-essential` 的保留清单里，
+> 保留升级会让它永远停在旧固件的版本、新版的开机钩子进不了运行层，`sysupgrade -n` 才会用上镜像里的新文件。
+> `-n` 会清空 `/etc/config`（本开关也在里面），刷机后由镜像内置的 `Files/etc/config/auto_upgrade` 恢复
+> 默认值（`enabled=1`、`keep_config=0`），`last_tag` 缺失时脚本再按 `/etc/buffy-version` 自愈基线。
+> 排查看 `/tmp/auto_upgrade.log`（每次运行都记录「刷机模式」）与 `uci show auto_upgrade`；
+> 改回保留配置：`uci set auto_upgrade.@auto_upgrade[0].keep_config='1' && uci commit auto_upgrade`。
 
 ## 一键升级
 
@@ -79,14 +82,16 @@ uci commit auto_upgrade
 
 ```bash
 pip install paramiko
-python3 Scripts/upgrade_firmware.py                          # 默认 192.168.1.1 root/root，保留配置升级
-python3 Scripts/upgrade_firmware.py --dry-run                # 只下载+校验，不刷机
-python3 Scripts/upgrade_firmware.py --reset --yes            # 重置配置(sysupgrade -n)并跳过确认
-python3 Scripts/upgrade_firmware.py --no-verify              # 刷机后不等待重启、不自动复验
+python3 Scripts/upgrade_firmware.py                            # 默认 192.168.1.1 root/root，不保留配置刷机（sysupgrade -n）
+python3 Scripts/upgrade_firmware.py --dry-run                  # 只下载+校验，不刷机
+python3 Scripts/upgrade_firmware.py --yes                      # 跳过刷机确认（默认已是不保留配置）
+python3 Scripts/upgrade_firmware.py --keep-config              # 改回保留配置升级（不清空 /etc 覆盖层）
+python3 Scripts/upgrade_firmware.py --no-verify                # 刷机后不等待重启、不自动复验
 ```
 
 - sha256 以 GitHub 资产 `digest` 为准，本地 + 路由器侧双重校验，不一致即中止
 - 刷机前校验路由器 `board_name` 与固件设备段一致，防止刷错设备
+- 默认不保留配置（`-n` 清空 `/etc` 覆盖层，改用镜像内置配置，含构建期注入的 secret）：刷机前先在路由器上 `sysupgrade -b /tmp/backup.tar.gz` 备份，需要时 `sysupgrade -r` 还原
 - 刷机后自动等待重启（按 uptime 判断确已重启）、等 OpenClash 开机自检完成后再运行 `verify_flash.py` 复验；`--no-verify` 跳过
 - 建议已安装并登录 `gh`（避免 GitHub 匿名 API 限流）
 

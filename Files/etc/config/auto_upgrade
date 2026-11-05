@@ -2,4 +2,7 @@ config auto_upgrade
 	# 默认开启。注意：本开关存放在 /etc/config，而 sysupgrade -n（不保留配置）会清空该目录，
 	# 默认 0 曾导致一次重置刷机后本功能永久静默失效（2026-09-15~17 三天未自动升级且无任何提示）。
 	option enabled '1'
-	option keep_config '1'
+	# 刷机默认不保留配置（sysupgrade -n）：保留升级会让 /lib/upgrade/keep.d 列出的文件（如 /etc/rc.local）
+	# 永久停留在旧版本，固件内置改动进不了运行层。需要保留配置时改为 '1'：
+	# uci set auto_upgrade.@auto_upgrade[0].keep_config='1' && uci commit auto_upgrade
+	option keep_config '0'

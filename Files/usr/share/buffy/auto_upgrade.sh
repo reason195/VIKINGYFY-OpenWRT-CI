@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # auto_upgrade.sh - 每日检查 GitHub 新固件，发现新版本自动下载校验并 sysupgrade 升级（cron 触发）
 # 开关：/etc/config/auto_upgrade 的 enabled（默认 1，见 Files/etc/config/auto_upgrade）；
-# keep_config=1（默认）保留配置升级，0 则 sysupgrade -n 重置。
+# 刷机默认不保留配置（keep_config=0 → sysupgrade -n），只有显式 keep_config=1 才保留。
 # 开关位于 /etc/config —— 该目录会被 sysupgrade -n 清空，历史上一次"不保留配置"刷机曾让本功能
 # 静默失效三天（2026-09-15~17 日志只有"未启用"，无任何告警）。对策：配置段缺失时自动重建；
 # 未启用时退出行为不变，但每周一推一次告警（/tmp 标记节流，每 boot 最多一次）。
@@ -43,9 +43,9 @@ flock -n 9 || { log "已有实例运行，退出"; exit 0; }
 if ! uci -q get 'auto_upgrade.@auto_upgrade[0]' >/dev/null 2>&1; then
 	uci -q add auto_upgrade auto_upgrade
 	uci set 'auto_upgrade.@auto_upgrade[0].enabled=1'
-	uci set 'auto_upgrade.@auto_upgrade[0].keep_config=1'
+	uci set 'auto_upgrade.@auto_upgrade[0].keep_config=0'
 	uci commit auto_upgrade
-	log "配置段缺失，已按默认值重建（enabled=1，keep_config=1）"
+	log "配置段缺失，已按默认值重建（enabled=1，keep_config=0）"
 fi
 
 if [ "$(uci -q get 'auto_upgrade.@auto_upgrade[0].enabled')" = "1" ]; then
@@ -64,8 +64,11 @@ fi
 BOARD_NOW=$(cat /tmp/sysinfo/board_name 2>/dev/null)
 [ "$BOARD_NOW" = "$BOARD" ] || fail "设备不匹配（$BOARD_NOW），拒绝自动刷机"
 
-FLAG=""
-[ "$(uci -q get 'auto_upgrade.@auto_upgrade[0].keep_config')" = "0" ] && FLAG="-n "
+# 默认走不保留配置刷机：仅 keep_config=1 才保留；缺失或其他值一律按 sysupgrade -n 处理
+FLAG="-n "
+MODE=重置配置升级
+[ "$(uci -q get 'auto_upgrade.@auto_upgrade[0].keep_config')" = "1" ] && { FLAG=""; MODE=保留配置升级; }
+log "刷机模式：$MODE"
 
 AVAIL=$(df -m /tmp | awk 'NR==2{print $4}')
 # 固件约 80–100MB，留足余量防下载中途 /tmp（tmpfs）耗尽；与 upgrade_firmware.py 的空间检查口径一致
@@ -139,8 +142,6 @@ GOT=$(sha256sum "$FW" | awk '{print $1}')
 [ "$GOT" = "$EXPECT" ] || fail "sha256 不符（got=$GOT want=$EXPECT），拒绝刷入"
 log "sha256 校验通过：$GOT"
 
-MODE=保留配置升级
-[ -n "$FLAG" ] && MODE=重置配置升级
 if [ "${AUTO_UPGRADE_DRYRUN:-0}" = "1" ]; then
 	log "[dryrun] 将执行：sysupgrade $FLAG$FW（$MODE）"
 	exit 0

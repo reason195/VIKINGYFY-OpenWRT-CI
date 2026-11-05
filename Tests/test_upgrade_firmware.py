@@ -7,7 +7,9 @@
 # 运行：python3 -m unittest discover -s Tests -p 'test_*.py' -v
 #   或：python3 Tests/test_upgrade_firmware.py
 
+import contextlib
 import hashlib
+import io
 import os
 import sys
 import unittest
@@ -238,6 +240,44 @@ class TriggerSysupgradeTest(unittest.TestCase):
     def test_reports_running_pid_when_log_empty(self):
         out, _ = self._run(log_out="", pid="12345")
         self.assertIn("pid=12345", out)
+
+
+class FlashModeDefaultTest(unittest.TestCase):
+    """刷机模式默认值：不带参数即不保留配置（sysupgrade -n），--keep-config 才走保留路径。"""
+
+    def _dry_run(self, extra):
+        out = io.StringIO()
+        argv = ["upgrade_firmware.py", "--dry-run"] + extra
+        with patch.object(uf.sys, "argv", argv), \
+                patch.object(uf, "fetch_releases", return_value=make_releases()), \
+                patch.object(uf, "download", return_value="b" * 64), \
+                contextlib.redirect_stdout(out):
+            rc = uf.main()
+        self.assertEqual(rc, 0)
+        return out.getvalue()
+
+    def test_default_flashes_without_keeping_config(self):
+        text = self._dry_run([])
+        self.assertIn("sysupgrade -n /tmp/fw-upgrade.bin", text)
+        self.assertIn("重置", text)
+
+    def test_keep_config_flag_drops_minus_n(self):
+        text = self._dry_run(["--keep-config"])
+        self.assertIn("sysupgrade /tmp/fw-upgrade.bin", text)
+        self.assertNotIn("sysupgrade -n", text)
+
+    def test_removed_reset_flag_is_rejected(self):
+        """--reset 已删除：默认即重置，避免同一轴上两个开关互相覆盖。"""
+        out = io.StringIO()
+        with patch.object(uf.sys, "argv", ["upgrade_firmware.py", "--dry-run", "--reset"]), \
+                patch.object(uf, "fetch_releases", return_value=make_releases()), \
+                patch.object(uf.sys, "exit", return_value=None), \
+                contextlib.redirect_stderr(out):
+            try:
+                uf.main()
+            except SystemExit as ex:
+                self.assertNotEqual(ex.code, 0)
+        self.assertIn("unrecognized arguments: --reset", out.getvalue())
 
 
 class MainAbortPathsTest(unittest.TestCase):

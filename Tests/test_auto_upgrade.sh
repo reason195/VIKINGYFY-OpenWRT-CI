@@ -242,6 +242,7 @@ check "识别到新版本" "LOG_HAS '发现新固件：$TAG_OLD -> $TAG_NEW'"
 check "进入下载步骤（沙箱内下载失败，退出码 1）" "[ \"$RC\" = \"1\" ]"
 check "失败原因来自校验清单而非前置闸门" "LOG_HAS 'SHA256SUMS.txt 拉取失败'"
 check "沙箱内未触发 sysupgrade" "! SUPG_CALLED"
+check "keep_config=1 时保留配置" "LOG_HAS '刷机模式：保留配置升级'"
 
 echo "== 用例 2：基线自愈（last_tag 缺失 + 固件内有构建 tag） =="
 reset_case 1 1 "" 1 "$TAG_OLD"
@@ -283,6 +284,18 @@ reset_case 0 1 "" 0 "$TAG_OLD"
 RC=$(run_script)
 check "检测到配置段缺失并重建" "LOG_HAS '配置段缺失，已按默认值重建'"
 check "重建后继续执行并发现新固件" "LOG_HAS '发现新固件：$TAG_OLD -> $TAG_NEW'"
+check "重建的默认值不保留配置" "LOG_HAS '刷机模式：重置配置升级'"
+
+echo "== 用例 7：刷机模式默认不保留配置 =="
+reset_case 1 0 "$TAG_OLD" 1
+run_script >/dev/null 2>&1
+check "keep_config=0 走 sysupgrade -n 模式" "LOG_HAS '刷机模式：重置配置升级'"
+reset_case 1 "" "$TAG_OLD" 1
+run_script >/dev/null 2>&1
+check "keep_config 选项缺失/为空同样重置" "LOG_HAS '刷机模式：重置配置升级'"
+reset_case 1 x "$TAG_OLD" 1
+run_script >/dev/null 2>&1
+check "非 1 的任意值仍按重置处理" "LOG_HAS '刷机模式：重置配置升级'"
 
 rm -rf "$SBX" 2>/dev/null || true
 
