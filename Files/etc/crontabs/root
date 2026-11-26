@@ -15,5 +15,8 @@
 #运行中周期性代理健康检查（每小时 204 探测，失败推 ntfy/Telegram 告警）
 5 * * * * /usr/share/buffy/proxy_watch.sh
 
+#美国线路兜底（每分钟检查 美国自动/美国策略，节点全掉时切到存活节点/切回美国自动）
+* * * * * /usr/share/buffy/us_failover.sh
+
 #每日检查 GitHub 新固件并自动升级（开关 /etc/config/auto_upgrade，日志 /tmp/auto_upgrade.log）
 7 10 * * * /usr/share/buffy/auto_upgrade.sh

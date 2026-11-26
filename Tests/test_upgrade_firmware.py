@@ -30,7 +30,7 @@ def make_asset(name, digest=None, size=1):
 def make_releases():
     return [
         {
-            "tag_name": "IPQ60XX-WIFI-NO-VIKINGYFY-main-26.08.17-00.13.34",
+            "tag_name": "IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.08.17-00.13.34",
             "assets": [
                 make_asset("qualcommax-ipq60xx-jdcloud_re-cs-07-squashfs-factory-26.08.17.bin",
                            "sha256:" + "a" * 64),
@@ -39,14 +39,14 @@ def make_releases():
             ],
         },
         {
-            "tag_name": "IPQ60XX-WIFI-NO-VIKINGYFY-main-26.08.15-21.46.59",
+            "tag_name": "IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.08.15-21.46.59",
             "assets": [
                 make_asset("qualcommax-ipq60xx-jdcloud_re-cs-07-squashfs-sysupgrade-26.08.15.bin",
                            "sha256:" + "c" * 64),
             ],
         },
         {
-            "tag_name": "OTHER-CONFIG-VIKINGYFY-main-26.08.17-00.13.34",
+            "tag_name": "OTHER-CONFIG-VIKINGYFY-owrt-26.08.17-00.13.34",
             "assets": [
                 make_asset("some-other-device-sysupgrade.bin", "sha256:" + "d" * 64),
             ],
@@ -57,12 +57,12 @@ def make_releases():
 class PickAssetTest(unittest.TestCase):
     def test_picks_sysupgrade_of_latest_matching_release(self):
         rel, a = uf.pick_asset(make_releases(), None, "IPQ60XX-WIFI-NO-", "jdcloud_re-cs-07")
-        self.assertEqual(rel["tag_name"], "IPQ60XX-WIFI-NO-VIKINGYFY-main-26.08.17-00.13.34")
+        self.assertEqual(rel["tag_name"], "IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.08.17-00.13.34")
         self.assertIn("sysupgrade", a["name"])
         self.assertNotIn("factory", a["name"])
 
     def test_respects_explicit_tag(self):
-        rel, a = uf.pick_asset(make_releases(), "IPQ60XX-WIFI-NO-VIKINGYFY-main-26.08.15-21.46.59",
+        rel, a = uf.pick_asset(make_releases(), "IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.08.15-21.46.59",
                                 "IPQ60XX-WIFI-NO-", "jdcloud_re-cs-07")
         self.assertIn("26.08.15", a["name"])
 

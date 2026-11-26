@@ -275,6 +275,24 @@ PYEOF
 			exit 1
 		fi
 
+		#订阅域名自愈：把 proxy-providers 的 URL 主机名补进 fake-ip-filter 与 nameserver-policy。
+		#sysupgrade -n 会清空 proxy_provider 缓存，首启必须重拉订阅；proxy: DIRECT 拉取时，
+		#域名若被 fake-ip 解析成 198.18.x.x 会 EOF，若走境外 DoH（respect-rules 下经代理）则
+		#代理未启动时解析不了——两种都会「拉不到订阅 → 代理起不来」死锁（26.11.07 实机事故）。
+		#注入后的 MihomoPro.yaml 含真实订阅地址，从中推导域名，换机场不必再手改两处列表。
+		#失败不阻断构建（Files/ 里的静态列表仍覆盖当前机场）。
+		if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+			echo "Syncing subscription domains to OpenClash lists..."
+			if python3 "$GITHUB_WORKSPACE/Scripts/openclash_sub_domains.py" \
+				"$CONF_PATH/MihomoPro.yaml" \
+				"$GITHUB_WORKSPACE/Files/etc/openclash/custom/openclash_custom_fake_filter.list" \
+				"$GITHUB_WORKSPACE/Files/etc/openclash/custom/openclash_custom_domain_dns_policy.list"; then
+				echo "subscription domains synced!"
+			else
+				echo "WARN: subscription domain sync failed; static lists still apply"
+			fi
+		fi
+
 		#预置规则集（rule-providers）：刷机首启死锁修复
 		#首启时规则集无本地缓存 → 需联网下载 → 依赖 DNS（fake-ip-filter 域名经 nameserver DoH 解析）→
 		#DoH 连接按 respect-rules 路由 → 规则未加载 → 落 MATCH 空代理组 → EOF → 全链路断（曾导致刷机后全屋 DNS 挂）。

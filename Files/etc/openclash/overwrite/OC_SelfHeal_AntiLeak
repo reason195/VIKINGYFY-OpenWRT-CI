@@ -1,0 +1,40 @@
+#!NAME = OC_SelfHeal_AntiLeak
+#!DESC = 代理组 180s 健康检查 + 空组回退直连 + provider 每小时刷新
+#!CONFIG = all
+
+# 说明（16-overwrite-module-format.md §16.1/§16.2）：
+# - [General] 在 yml_change.sh 之前写 UCI，等价于在 LuCI 里改插件设置；
+# - [YAML] 在 yml_change.sh / yml_rules_change.sh 之后合并进运行配置，优先于订阅原值；
+# - 段头必须有；本文件随固件镜像发布，首启由 /etc/uci-defaults/93-buffy-openclash.sh 登记。
+#
+# 为什么这些东西值得随镜像固化（而不是只在 LuCI 里点一次）：sysupgrade -n 会清空
+# /etc/config，刷完机若不重新登记，最先失效的正是「节点全挂时自动回退」与
+# 「provider 定期刷新」这些救命项，表现为「刷机后代理时好时坏」。
+# 本机（主路由）保留 IPv6：模块不写 IPV6_ENABLE/IPV6_DNS/dns.ipv6，避免把 IPv6 出口关掉。
+
+[General]
+ENABLE_RESPECT_RULES = 1
+APPEND_WAN_DNS = 0
+
+[YAML]
+proxy-providers*:
+  where:
+    type: http
+  set:
+    interval: 3600
+    health-check:
+      enable: true
+      url: 'https://cp.cloudflare.com/generate_204'
+      interval: 180
+      timeout: 5000
+      lazy: false
+      expected-status: 204
+<proxy-groups>*:
+  where:
+    type: '/^(url-test|fallback|load-balance)$/'
+  set:
+    lazy: false
+    interval: 180
+    timeout: 5000
+    expected-status: 204
+    empty-fallback: DIRECT

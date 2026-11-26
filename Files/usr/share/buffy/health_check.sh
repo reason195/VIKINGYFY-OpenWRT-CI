@@ -4,7 +4,7 @@
 
 # health_check.sh - 路由器全面体检（非 OpenClash 项）
 # 检查：WAN 连通性(IPv4/IPv6) / DNS 解析 / DDNS 域名 / Let's Encrypt 证书 /
-#       dnsmasq 备用上游 / 防火墙 IPv6 放行 + wan forward=DROP / 硬件流量卸载。
+#       dnsmasq 上游是否被锁死为 OpenClash / 防火墙 IPv6 放行 + wan forward=DROP / 硬件流量卸载。
 # 用法：手动 /usr/share/buffy/health_check.sh，或每日 cron（见 /etc/crontabs/root）。
 # 任一 FAIL：退出码非 0 并推 ntfy/Telegram 告警；日志：/tmp/health_check.log
 
@@ -103,21 +103,21 @@ else
 	bad "LE 证书缺失 ($LEAF)"
 fi
 
-# ---- 3. dnsmasq 备用上游 ----
-# rc.local 写到生成的 dnsmasq conf 里的 conf-dir（本机为 /tmp/dnsmasq.<cfgid>.d，非 /tmp/dnsmasq.d），
-# 用 glob 兜底定位真实路径，避免按固定目录查漏报。
+# ---- 3. dnsmasq 上游防泄漏 ----
+# OpenClash 运行期间 dnsmasq 只能以 127.0.0.1#7874 为唯一上游；
+# 若 conf-dir 存在 60-fallback.conf（直连 223.5.5.5 等），客户端同域并发/重传时
+# dnsmasq 会跳过忙碌的 7874 转给公共 DNS，造成 DNS 泄漏（26.11.24 实机证实）。
+# 路径用 glob 兜底定位（本机为 /tmp/dnsmasq.<cfgid>.d，非 /tmp/dnsmasq.d）。
 FALLBACK=""
 for f in /tmp/dnsmasq.*.d/60-fallback.conf /tmp/dnsmasq.d/60-fallback.conf /tmp/etc/dnsmasq.d/60-fallback.conf; do
 	[ -s "$f" ] && FALLBACK="$f" && break
 done
 if [ -n "$FALLBACK" ]; then
-	if grep -q '223.5.5.5' "$FALLBACK"; then
-		ok "dnsmasq 备用上游已部署 ($FALLBACK)"
-	else
-		bad "dnsmasq 备用上游内容异常"
-	fi
+	bad "dnsmasq 存在直连兜底上游 ($FALLBACK)，存在 DNS 泄漏风险"
+elif grep -q '^server=127.0.0.1#7874$' /tmp/etc/dnsmasq.conf.* 2>/dev/null; then
+	ok "dnsmasq 唯一上游已锁定为 127.0.0.1#7874（无外部直连兜底）"
 else
-	bad "dnsmasq 备用上游缺失 (conf-dir/60-fallback.conf)"
+	bad "dnsmasq 未指向 127.0.0.1#7874"
 fi
 
 if [ -n "$(pidof dnsmasq 2>/dev/null)" ]; then

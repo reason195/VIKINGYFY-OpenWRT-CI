@@ -8,7 +8,7 @@
 #   python3 Scripts/upgrade_firmware.py --dry-run           # 只下载+校验，不连路由器、不刷机
 #   python3 Scripts/upgrade_firmware.py --yes               # 不保留配置刷机（sysupgrade -n），跳过确认
 #   python3 Scripts/upgrade_firmware.py --keep-config       # 改回保留配置升级（/etc 覆盖层不清空）
-#   python3 Scripts/upgrade_firmware.py --tag IPQ60XX-WIFI-NO-VIKINGYFY-main-26.08.17-00.13.34
+#   python3 Scripts/upgrade_firmware.py --tag IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.08.17-00.13.34
 #   ROUTER_HOST=10.0.0.1 ROUTER_PASSWORD=xxx python3 Scripts/upgrade_firmware.py
 #
 # 依赖：pip install paramiko（同 verify_flash.py，仅本地运行）。release 元数据优先用 gh 拉取

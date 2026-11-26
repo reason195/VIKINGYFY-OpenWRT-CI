@@ -6,9 +6,14 @@ name: QCA-ALL
 
 #CI计划
 on:
-  #自动编译：每天凌晨4点（北京时间）检查上游源码是否有更新，无更新则跳过编译
+  #自动编译：每天 00:17（北京时间）检查上游源码是否有更新，无更新则跳过编译。
+  #为什么是午夜且错开整点：GitHub schedule 是 best-effort，实测延迟 2h20m~5h49m
+  #（26.11.19 计划 04:00、实际 09:49 才启动），叠加流水线自身约 2h13m，原 04:00 的
+  #release 落在 11:15~12:02，全部晚于路由器 10:07 的 auto_upgrade 窗口，设备永远刷
+  #前一天的固件（实机 buffy-version 停在 26.11.18，当天已有 26.11.19）。提前 4 小时，
+  #按最差 8h 总耗时约 08:00 出 release，当天即可刷入；分钟避开 :00（整点排队最严重）。
   schedule:
-    - cron: '0 20 * * *'
+    - cron: '17 16 * * *'
   #手动编译
   workflow_dispatch:
     inputs:
@@ -56,7 +61,7 @@ jobs:
         env:
           GH_TOKEN: ${{github.token}}
         run: |
-          echo "sha=$(gh api repos/VIKINGYFY/immortalwrt/commits/main --jq .sha)" >> $GITHUB_OUTPUT
+          echo "sha=$(gh api repos/VIKINGYFY/immortalwrt/commits/owrt --jq .sha)" >> $GITHUB_OUTPUT
       - name: Get Last Built Commit
         id: last
         continue-on-error: true
@@ -64,7 +69,7 @@ jobs:
           GH_TOKEN: ${{github.token}}
         run: |
           # 本项目仅构建 jdcloud_re-cs-07（IPQ60XX-WIFI-NO），与下方 config job 保持一致
-          LAST_TAG=$(gh release list --limit 30 --json tagName -q '.[].tagName' | grep '^IPQ60XX-WIFI-NO-VIKINGYFY-main-' | head -n 1)
+          LAST_TAG=$(gh release list --limit 30 --json tagName -q '.[].tagName' | grep '^IPQ60XX-WIFI-NO-VIKINGYFY-owrt-' | head -n 1)
           if [ -n "$LAST_TAG" ]; then
             echo "sha=$(gh release view "$LAST_TAG" --json body -q .body | grep -oP '(?<=提交：)[0-9a-f]+' | head -n 1)" >> $GITHUB_OUTPUT
           else
@@ -135,6 +140,7 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
       TELEGRAM_CHAT_ID: ${{secrets.TELEGRAM_CHAT_ID}}
       SINGBOX_SS_PASSWORD: ${{secrets.SINGBOX_SS_PASSWORD}}
+      TAILSCALE_AUTHKEY: ${{secrets.TAILSCALE_AUTHKEY}}
     with:
       #编译配置（本项目仅构建 jdcloud_re-cs-07）
       WRT_CONFIG: IPQ60XX-WIFI-NO
@@ -150,8 +156,10 @@ jobs:
       WRT_IP: 192.168.1.1
       #源码链接
       WRT_REPO: https://github.com/VIKINGYFY/immortalwrt.git
-      #源码分支
-      WRT_BRANCH: main
+      #源码分支：上游 main 已于 2026-10-15 停更（此后只有 owrt 在更新：2026-11-26 f814b1b），
+      #继续跟 main 会永远「无更新」、固件停在旧代码上。切 owrt 的副作用：
+      #tag 前缀由 -main- 变 -owrt-，首次升级要手动刷一次（auto_upgrade 按 tag 查更新）。
+      WRT_BRANCH: owrt
       #源码名称
       WRT_SOURCE: VIKINGYFY/immortalwrt
       #插件调整

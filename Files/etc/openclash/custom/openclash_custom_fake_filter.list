@@ -2,9 +2,23 @@
 # 这些域名在 fake-ip 模式下必须返回真实 IP（不落入 198.18.x.x），
 # 否则 clash 自身（provider 拉取、规则源、DDNS、acme、核心下载）DIRECT 直连 fake-ip 会失败。
 # 格式：+.域名 = 该域名及其所有子域名
+#
+# 机场订阅域名必须列在这里：sysupgrade -n 会清掉 proxy_provider 缓存，首启必须重新
+# 拉订阅；proxy-providers 用 proxy: DIRECT 拉取，域名若解析成 fake-ip 会直接 EOF，
+# 节点拉不到 → 代理起不来（26.11.07 实机事故）。换机场时由构建期脚本
+# Scripts/openclash_sub_domains.py 从 MihomoPro.yaml 的 proxy-providers 自动补齐，
+# 这里的条目是离线兜底/已知机场。
++.tohno-0.top
++.de5.net
 +.aisaka-taiga.com
+# DDNS/acme 用：必须解析到真实公网 IP，fake-ip 会让 DDNS 上报错误地址
 +.duckdns.org
 +.github.com
 +.githubusercontent.com
 +.githubassets.com
 +.jsdelivr.net
+# Tailscale 控制面/中继：必须真实 IP + 直连，fake-ip 会让 tailscaled 卡在 doLogin
+# （覆盖 hook 的同类注入，hook 失效时仍有真实解析）
++.tailscale.com
++.tailscale.io
++.tailscale.net

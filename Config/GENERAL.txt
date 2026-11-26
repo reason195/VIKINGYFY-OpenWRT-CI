@@ -2,6 +2,9 @@
 CONFIG_PACKAGE_luci-app-homeproxy=y
 CONFIG_PACKAGE_luci-app-openclash=y
 CONFIG_PACKAGE_luci-app-nikki=y
+#Tailscale：官方包 + 社区 LuCI 面板（管理页在 系统→Tailscale），节点名 owrt-main，宣告 192.168.1.0/24
+CONFIG_PACKAGE_tailscale=y
+CONFIG_PACKAGE_luci-app-tailscale=y
 #增加插件
 CONFIG_PACKAGE_luci-app-autoreboot=y
 CONFIG_PACKAGE_luci-app-mini-diskmanager=y
@@ -22,6 +25,7 @@ CONFIG_PACKAGE_luci-i18n-acme-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-filebrowser-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-vnstat2-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-tailscale-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-fullconenat-sonic-zh-cn=y
 #删除插件
 CONFIG_PACKAGE_luci-app-attendedsysupgrade=n

@@ -10,7 +10,8 @@
 # 覆盖（对应 2026-09-17「新固件未自动升级」排障后的修复）：
 #   1 正常升级路径（last_tag 落后于最新 release）
 #   2 基线自愈：last_tag 缺失 + 固件内含 /etc/buffy-version → 以运行版本为基线并升级
-#   3 旧固件兜底：last_tag 缺失且无 buffy-version → 仅记录基线、不刷机
+#   3 无法推导 release 前缀：无 buffy-version → 跳过刷机、单次告警、零网络请求
+#   8 跨分支防护：buffy-version 属于别的 CI 分支/项目 → atom 无匹配，保持不动
 #   4 已是最新
 #   5 未启用：退出行为不变，周一推一次告警（/tmp 标记节流）
 #   6 配置段缺失：自动重建并继续
@@ -32,8 +33,8 @@ LIB="$REPO_DIR/Files/usr/share/buffy/lib-buffy.sh"
 
 REAL_DATE=$(command -v date)
 [ -x "$REAL_DATE" ] || REAL_DATE=/bin/date
-TAG_NEW="IPQ60XX-WIFI-NO-VIKINGYFY-main-26.09.17-06.35.27"
-TAG_OLD="IPQ60XX-WIFI-NO-VIKINGYFY-main-26.09.08-06.29.39"
+TAG_NEW="IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.09.17-06.35.27"
+TAG_OLD="IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.09.08-06.29.39"
 PASS=0
 FAIL=0
 
@@ -58,6 +59,7 @@ rewrite() {
 	sed -e 's|/usr/share/buffy|@SBX@/share/buffy|g' \
 		-e 's|/etc/buffy-version|@SBX@/etc/buffy-version|g' \
 		-e 's|/etc/buffy-notify.conf|@SBX@/etc/buffy-notify.conf|g' \
+		-e 's|/etc/tailscale|@SBX@/etc/tailscale|g' \
 		-e 's|/tmp/|@SBX@/tmp/|g' "$1" | sed "s|@SBX@|$SBX|g"
 }
 rewrite "$TARGET" > "$SBX/auto_upgrade.sh"
@@ -70,12 +72,12 @@ cat > "$SBX/etc/atom.xml" <<'ATOM'
   <id>tag:github.com,2008:https://github.com/reason195/VIKINGYFY-OpenWRT-CI/releases</id>
   <title>Release notes from VIKINGYFY-OpenWRT-CI</title>
   <entry>
-    <id>tag:github.com,2008:Repository/1298512691/IPQ60XX-WIFI-NO-VIKINGYFY-main-26.09.17-06.35.27</id>
-    <title>IPQ60XX-WIFI-NO-VIKINGYFY-main-26.09.17-06.35.27</title>
+    <id>tag:github.com,2008:Repository/1298512691/IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.09.17-06.35.27</id>
+    <title>IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.09.17-06.35.27</title>
   </entry>
   <entry>
-    <id>tag:github.com,2008:Repository/1298512691/IPQ60XX-WIFI-NO-VIKINGYFY-main-26.09.08-06.29.39</id>
-    <title>IPQ60XX-WIFI-NO-VIKINGYFY-main-26.09.08-06.29.39</title>
+    <id>tag:github.com,2008:Repository/1298512691/IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.09.08-06.29.39</id>
+    <title>IPQ60XX-WIFI-NO-VIKINGYFY-owrt-26.09.08-06.29.39</title>
   </entry>
 </feed>
 ATOM
@@ -236,7 +238,7 @@ run_script() {
 }
 
 echo "== 用例 1：正常升级路径（基线落后） =="
-reset_case 1 1 "$TAG_OLD" 1
+reset_case 1 1 "$TAG_OLD" 1 "$TAG_OLD"
 RC=$(run_script)
 check "识别到新版本" "LOG_HAS '发现新固件：$TAG_OLD -> $TAG_NEW'"
 check "进入下载步骤（沙箱内下载失败，退出码 1）" "[ \"$RC\" = \"1\" ]"
@@ -252,12 +254,22 @@ check "写入 uci last_tag=运行版本" "[ \"\$(LAST_TAG)\" = \"$TAG_OLD\" ]"
 check "据此判定需要升级（未误判为已是最新）" "LOG_HAS '发现新固件：$TAG_OLD -> $TAG_NEW'"
 check "未走「记录最新版本为基线」的旧分支" "LOG_NOT '为基线（不刷机）'"
 
-echo "== 用例 3：旧固件兜底（无 buffy-version） =="
+echo "== 用例 3：无法推导 release 前缀（无 buffy-version） =="
 reset_case 1 1 "" 1
 RC=$(run_script)
-check "记录最新版本为基线且不刷机" "LOG_HAS '固件无版本标识：记录当前最新版本 $TAG_NEW 为基线（不刷机）'"
-check "退出码 0" "[ \"$RC\" = \"0\" ]"
+check "说明原因并跳过自动刷机" "LOG_HAS '推导 release 前缀（内容：文件缺失），跳过自动刷机'"
+check "退出码 0（不刷机、不重试）" "[ \"$RC\" = \"0\" ]"
+# notify 本身可能发一条告警（ntfy/Telegram），这里只要求不拉 release 源、不下载
+check "未拉取 release 源" "! grep -q releases.atom \"$SBX/etc/curl.log\" 2>/dev/null"
 check "未进入下载" "LOG_NOT '尝试下载'"
+check "写入一次性告警标记（同一 boot 不重复打扰）" "[ -f \"$SBX/tmp/.auto_upgrade_noprefix\" ]"
+
+echo "== 用例 8：跨分支防护（固件标识属于别的 CI 分支） =="
+reset_case 1 1 "" 1 "IPQ60XX-WIFI-NO-VIKINGYFY-side-26.09.17-06.35.27"
+RC=$(run_script)
+check "按本机前缀筛选 release 且无一匹配" "LOG_HAS 'atom 中没有属于本分支（IPQ60XX-WIFI-NO-VIKINGYFY-side-）的 release'"
+check "不跨分支刷机" "LOG_NOT '尝试下载'"
+check "退出码 0（等待本分支构建）" "[ \"$RC\" = \"0\" ]"
 
 echo "== 用例 4：已是最新 =="
 reset_case 1 1 "$TAG_NEW" 1 "$TAG_NEW"
@@ -287,15 +299,26 @@ check "重建后继续执行并发现新固件" "LOG_HAS '发现新固件：$TAG
 check "重建的默认值不保留配置" "LOG_HAS '刷机模式：重置配置升级'"
 
 echo "== 用例 7：刷机模式默认不保留配置 =="
-reset_case 1 0 "$TAG_OLD" 1
+reset_case 1 0 "$TAG_OLD" 1 "$TAG_OLD"
 run_script >/dev/null 2>&1
 check "keep_config=0 走 sysupgrade -n 模式" "LOG_HAS '刷机模式：重置配置升级'"
-reset_case 1 "" "$TAG_OLD" 1
+reset_case 1 "" "$TAG_OLD" 1 "$TAG_OLD"
 run_script >/dev/null 2>&1
 check "keep_config 选项缺失/为空同样重置" "LOG_HAS '刷机模式：重置配置升级'"
-reset_case 1 x "$TAG_OLD" 1
+reset_case 1 x "$TAG_OLD" 1 "$TAG_OLD"
 run_script >/dev/null 2>&1
 check "非 1 的任意值仍按重置处理" "LOG_HAS '刷机模式：重置配置升级'"
+
+echo "== 用例 9：保留配置时带走 Tailscale 节点身份 =="
+reset_case 1 1 "$TAG_OLD" 1 "$TAG_OLD"
+mkdir -p "$SBX/etc/tailscale"
+echo "state" > "$SBX/etc/tailscale/tailscaled.state"
+run_script >/dev/null 2>&1
+check "keep_config=1 且存在 state 时打包" "LOG_HAS '已打包 .*tailscaled.state，升级时保留 Tailscale 节点身份'"
+check "备份包已生成" "[ -s \"$SBX/tmp/ts-state-backup.tar.gz\" ]"
+reset_case 1 0 "$TAG_OLD" 1 "$TAG_OLD"
+run_script >/dev/null 2>&1
+check "重置配置刷机时不打包（保留也无意义）" "LOG_NOT '已打包 /etc/tailscale/tailscaled.state'"
 
 rm -rf "$SBX" 2>/dev/null || true
 

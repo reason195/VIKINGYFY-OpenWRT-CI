@@ -1,0 +1,23 @@
+
+# Tailscale（官方包 + luci-app-tailscale 社区面板，管理页在 LuCI「系统→Tailscale」）
+# 本机是主路由：LAN 192.168.1.0/24、DNS 走 dnsmasq → OpenClash(127.0.0.1#7874) fake-ip 分流。
+config tailscale 'settings'
+	option enabled '1'
+	option port '41641'
+	option config_path '/etc/tailscale'
+	option fw_mode 'nftables'
+	option log_stdout '1'
+	option log_stderr '1'
+	# 不接管 DNS：接受 Tailscale 的 100.100.100.100 会摧毁 dnsmasq/OpenClash 分流架构，必须 0。
+	option accept_dns '0'
+	# 宣告整个 LAN 段，外网设备可直接访问 192.168.1.0/24（通向本机及 LAN 设备）。
+	list advertise_routes '192.168.1.0/24'
+	# 节点名显式指定：系统 hostname 是 OWRT，且同 tailnet 里可能已有同名节点，
+	# 不指定时 Tailscale 会自动加 -1 后缀，表现为 owrt-1（换机/重刷后更难认）。
+	option hostname 'owrt-main'
+	# 预认证密钥由 CI 从 GitHub Secret TAILSCALE_AUTHKEY 注入（占位符见 Scripts/Settings.sh）。
+	# 用 Reusable 密钥（不带 Ephemeral）：节点离线后保留，是永久节点。
+	# --advertise-tags 让节点注册时自动带 tag:router：ACL autoApprovers 据此自动批准
+	# 子网路由，且 tag 会禁用 node key expiry（节点永不过期）。
+	option flags '--advertise-tags=tag:router'
+	option authkey '@@TAILSCALE_AUTHKEY@@'

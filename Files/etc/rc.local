@@ -33,16 +33,18 @@ fi
 # syncdial fix: 确保 syncdial 配置文件存在，避免 ppp.sh 同步拨号时 uci 报错
 [ -s /etc/config/syncdial ] || { printf 'config syncdial %s\n\toption enabled %s\n' 'config' '0' > /etc/config/syncdial; }
 
-# dnsmasq 备用 DNS conf（/tmp 重启即清，每次启动重建；OpenClash 看门狗不管理此目录）
-# 注意：uci show dhcp 对匿名 dnsmasq section 打印为 dhcp.@dnsmasq[0]=dnsmasq，没有 .type='dnsmasq' 行，
-# 旧写法提取不到 cfgid 会把 conf 写到 /tmp/dnsmasq..d 导致备用上游从不生效。
-# 直接读 dnsmasq 启动时生成的 conf 里的 conf-dir=，不猜测匿名 section 的 cfgid。
+# dnsmasq 唯一上游 = OpenClash（127.0.0.1#7874），不给直连兜底。
+# 若在 conf-dir 里常驻写入 223.5.5.5/119.29.29.29，即使 dhcp 里开了 strictorder，
+# 客户端同域并发/重传查询时 dnsmasq 仍会跳过忙碌的 7874 转给公共 DNS，造成 DNS 泄漏
+# （2026-11-24 实机 logread + bash.ws 实测证实）。这里显式删除旧版固件留下的兜底文件，
+# 升级上来的机器也会在下一次启动时收敛（/tmp 重启即清，故每次启动都检查）。
+# 代价：clash 未运行期间本机与 LAN 都没有 DNS（与「DNS 只走代理」是同一个决定）。
+# conf-dir 路径从 dnsmasq 生成的 conf 读取：uci show dhcp 对匿名 dnsmasq section 打印为
+# dhcp.@dnsmasq[0]=dnsmasq，没有 .type='dnsmasq' 行，旧写法会写到 /tmp/dnsmasq..d。
 DIR=""
 [ -n "$DIR" ] || DIR=$(awk -F '=' '/^conf-dir=/ {print $2}' /tmp/etc/dnsmasq.conf.* 2>/dev/null | head -1)
 [ -n "$DIR" ] || DIR="/tmp/dnsmasq.d"
-mkdir -p "$DIR"
-printf 'server=223.5.5.5\nserver=119.29.29.29\nserver=2400:3200::1\n' > "$DIR/60-fallback.conf"
-chmod 644 "$DIR/60-fallback.conf"
+rm -f "$DIR/60-fallback.conf"
 /etc/init.d/dnsmasq restart >/dev/null 2>&1
 
 # custom_fakeip_filter 自愈（防断网修复项）：订阅源/规则源/DDNS 等域名必须返回真实 IP。
@@ -52,11 +54,16 @@ uci -q get openclash.config.custom_fakeip_filter | grep -q '^1$' || {
   uci set openclash.config.custom_fakeip_filter='1'
   uci commit openclash 2>/dev/null
 }
-[ -s /etc/openclash/custom/openclash_custom_fake_filter.list ] || {
-  mkdir -p /etc/openclash/custom 2>/dev/null
-  cp /rom/etc/openclash/custom/openclash_custom_fake_filter.list /etc/openclash/custom/openclash_custom_fake_filter.list 2>/dev/null
-}
-chmod 644 /etc/openclash/custom/openclash_custom_fake_filter.list 2>/dev/null
+# 两个列表都要在：fake-ip-filter 负责「返回真实 IP」，nameserver-policy 负责
+# 「代理没起来也能解析」，缺任一都会在 sysupgrade -n 后首启拉不到订阅。
+for _list in openclash_custom_fake_filter.list openclash_custom_domain_dns_policy.list; do
+  [ -s "/etc/openclash/custom/$_list" ] || {
+    mkdir -p /etc/openclash/custom 2>/dev/null
+    cp "/rom/etc/openclash/custom/$_list" "/etc/openclash/custom/$_list" 2>/dev/null
+  }
+  chmod 644 "/etc/openclash/custom/$_list" 2>/dev/null
+done
+unset _list
 
 # OpenClash 控制台/API 凭据快照：密钥本体由 luci-app-openclash 自带 uci-defaults 首启随机生成
 # （本仓库不自造，见 93-buffy-openclash.sh），这里只把当前生效值同步到文本文件便于命令行查询。

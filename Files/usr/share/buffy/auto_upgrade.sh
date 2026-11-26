@@ -21,7 +21,9 @@
 LOG="/tmp/auto_upgrade.log"
 
 REPO="reason195/VIKINGYFY-OpenWRT-CI"
-TAG_PREFIX="IPQ60XX-WIFI-NO-VIKINGYFY-main-"
+# TAG_PREFIX 不写死：由 /etc/buffy-version（本固件的 release tag）在运行时剥掉末尾日期推导，
+# 见下方「分支前缀」一节。上游换分支（main→owrt）会让写死的前缀一夜之间失效，
+# 表现为「atom 中未找到前缀 … 的 release」刷机停更，而没有版本文件时更隐蔽。
 DEVICE="jdcloud_re-cs-07"
 BOARD="jdcloud,re-cs-07"
 FW="/tmp/fw-upgrade-auto.bin"
@@ -70,9 +72,46 @@ MODE=重置配置升级
 [ "$(uci -q get 'auto_upgrade.@auto_upgrade[0].keep_config')" = "1" ] && { FLAG=""; MODE=保留配置升级; }
 log "刷机模式：$MODE"
 
+# 保留配置升级时额外带上 Tailscale 节点身份（/etc/tailscale/tailscaled.state 不在
+# sysupgrade 默认保留清单里）：不带它的后果是每次刷机都以同一 authkey 重新注册，
+# tailnet 里出现 owrt-1/-2 之类新节点、旧节点残留，子网路由批准也要重来。
+TS_BACKUP="/tmp/ts-state-backup.tar.gz"
+rm -f "$TS_BACKUP"
+if [ -z "$FLAG" ] && [ -s /etc/tailscale/tailscaled.state ]; then
+	if tar -czf "$TS_BACKUP" /etc/tailscale/tailscaled.state 2>/dev/null && [ -s "$TS_BACKUP" ]; then
+		FLAG="-f $TS_BACKUP "
+		log "已打包 /etc/tailscale/tailscaled.state，升级时保留 Tailscale 节点身份"
+	fi
+fi
+
 AVAIL=$(df -m /tmp | awk 'NR==2{print $4}')
 # 固件约 80–100MB，留足余量防下载中途 /tmp（tmpfs）耗尽；与 upgrade_firmware.py 的空间检查口径一致
 [ "${AVAIL:-0}" -ge 150 ] 2>/dev/null || fail "/tmp 可用空间不足（${AVAIL:-?}MB < 150MB）"
+
+# --- 0. 分支前缀：只刷与本机构建同 CI 分支的新版 ---
+# tag 形如 IPQ60XX-WIFI-NO-VIKINGYFY-<CI分支>-<YY.MM.DD-HH.MM.SS>。CI 分支名自身可能含 '-'
+# （如 feat/xxx → feat-xxx），不能按「第几段」截取，只能按末尾日期格式剥离。
+# 推导不出来就停更：宁可一直不升级，也不能拿别的分支/别的项目的镜像覆盖本机
+# —— 主路由与旁路由两种角色的 network/dhcp/防火墙是整套互换的。
+RUNNING=$(cat /etc/buffy-version 2>/dev/null)
+TAG_PREFIX=""
+case "$RUNNING" in
+	*[0-9][0-9].[0-9][0-9].[0-9][0-9]-[0-9][0-9].[0-9][0-9].[0-9][0-9])
+		# 只剥日期本体、保留它前面那个横杠：前缀必须以 '-' 结尾，
+		# 否则 SUFFIX=${TAG#"$TAG_PREFIX"} 会剩一个多余的横杠，资产名拼不出来。
+		TAG_PREFIX=$(printf '%s\n' "$RUNNING" | sed 's/[0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]-[0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]$//')
+		;;
+esac
+if [ -z "$TAG_PREFIX" ] || [ "$TAG_PREFIX" = "$RUNNING" ]; then
+	log "无法从 /etc/buffy-version 推导 release 前缀（内容：${RUNNING:-文件缺失}），跳过自动刷机"
+	# 每 boot 只推一次（/tmp 重启即清），避免 cron 每天重复告警刷屏
+	if [ ! -f /tmp/.auto_upgrade_noprefix ]; then
+		touch /tmp/.auto_upgrade_noprefix
+		notify "路由器自动升级已跳过" "本机缺少可用的构建标识 /etc/buffy-version，判断不出属于哪个 CI 分支。为避免刷到别的分支/别的项目的固件，自动刷机已跳过。手动升级请显式指定标签：python3 Scripts/upgrade_firmware.py --tag <release 标签>；刷入带构建标识的镜像后本功能自动恢复。"
+	fi
+	exit 0
+fi
+log "本机 release 前缀：$TAG_PREFIX"
 
 # --- 1. 从 releases.atom 发现最新匹配前缀的 tag ---
 FEED=$(curl -fsS -m 30 -A "auto_upgrade.sh" "https://github.com/$REPO/releases.atom" 2>/dev/null) \
@@ -80,7 +119,12 @@ FEED=$(curl -fsS -m 30 -A "auto_upgrade.sh" "https://github.com/$REPO/releases.a
 TAG=$(printf '%s' "$FEED" \
 	| sed -n 's#.*<id>tag:github.com,2008:Repository/[0-9]*/\([^<]*\)</id>#\1#p' \
 	| grep "^$TAG_PREFIX" | head -n1)
-[ -n "$TAG" ] || fail "atom 中未找到前缀 $TAG_PREFIX 的 release"
+if [ -z "$TAG" ]; then
+	# 不算故障：本分支可能一次都还没构建过（换分支首日必然如此）。走 fail() 会每天推一条告警，
+	# 与真正的下载/校验失败混在一起，反而掩盖真正出问题的那一类。
+	log "atom 中没有属于本分支（$TAG_PREFIX）的 release，等待下次构建"
+	exit 0
+fi
 
 SUFFIX=${TAG#"$TAG_PREFIX"}
 NAME="qualcommax-ipq60xx-${DEVICE}-squashfs-sysupgrade-${SUFFIX}.bin"
@@ -89,21 +133,14 @@ BASE="https://github.com/$REPO/releases/download/$TAG"
 # --- 2. 与基线比对 ---
 CUR=$(uci -q get 'auto_upgrade.@auto_upgrade[0].last_tag')
 if [ -z "$CUR" ]; then
-	# 基线自愈：构建期由 Settings.sh 写入 /etc/buffy-version（内容为本固件的 release tag）。
+	# 基线自愈：/etc/buffy-version 由构建期 Settings.sh 写入，内容就是本固件的 release tag。
 	# 必须以"运行版本"为基线才能判断是否需要升级；否则会把最新版本记为基线，
 	# 造成配置被重置后永远落后一版且此后再不升级（2026-09-17 排障定位到的第二个缺陷）。
-	RUNNING=$(cat /etc/buffy-version 2>/dev/null)
-	if [ -n "$RUNNING" ]; then
-		CUR="$RUNNING"
-		uci set "auto_upgrade.@auto_upgrade[0].last_tag=$CUR"
-		uci commit auto_upgrade
-		log "基线缺失，已按固件内构建版本初始化：$CUR"
-	else
-		uci set "auto_upgrade.@auto_upgrade[0].last_tag=$TAG"
-		uci commit auto_upgrade
-		log "首次运行且固件无版本标识：记录当前最新版本 $TAG 为基线（不刷机）"
-		exit 0
-	fi
+	# 能走到这里 RUNNING 必然非空——第 0 节已用推导出的前缀并在缺失时提前退出。
+	CUR="$RUNNING"
+	uci set "auto_upgrade.@auto_upgrade[0].last_tag=$CUR"
+	uci commit auto_upgrade
+	log "基线缺失，已按固件内构建版本初始化：$CUR"
 fi
 [ "$TAG" != "$CUR" ] || { log "已是最新（$TAG），退出"; exit 0; }
 

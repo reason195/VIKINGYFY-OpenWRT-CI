@@ -34,10 +34,45 @@ uci set openclash.config.custom_domain_dns_server='223.5.5.5'
 # 解析成 198.18.x.x，DIRECT 直连 fake-ip 必然 EOF（alpha 核心行为）。
 # 解法：custom_fakeip_filter 把这些域名加入 fake-ip-filter（解析真实 IP）。
 # 域名列表见 /etc/openclash/custom/openclash_custom_fake_filter.list
+# 配套：同一批域名还要在 openclash_custom_domain_dns_policy.list 里指向国内 DoH 直连，
+# 否则仍会走 nameserver（境外 DoH，respect-rules 下经代理）解析——代理未启动时同样
+# 解析不了，首启拉订阅死锁。两个列表都由构建期 Scripts/openclash_sub_domains.py
+# 从 MihomoPro.yaml 的 proxy-providers 自动补齐。
 uci -q delete openclash.config.custom_fakeip_filter
 uci set openclash.config.custom_fakeip_filter='1'
 uci -q delete openclash.config.skip_proxy_address
 uci set openclash.config.skip_proxy_address='1'
+# DNS 防泄漏：订阅自带的 DNS 段通常是国内 DoH（alidns/doh.pub），且 enable_custom_dns=0
+# 时插件不覆写 → 国外域名由国内解析器解析，权威侧看到的是国内 ISP 解析器（DNS 泄漏），
+# 而流量却从境外节点出去。
+# 方案：enable_custom_dns=1 由 @dns_servers 生成 nameserver（境外 DoH，respect-rules=1
+# 下 DoH 连接经代理出口）；custom_name_policy=1 合并 openclash_custom_domain_dns_policy.list，
+# 让国内/私有/苹果域名仍走国内 DoH 直连（保 CDN 就近解析）。
+uci -q delete openclash.config.enable_custom_dns
+uci set openclash.config.enable_custom_dns='1'
+uci -q delete openclash.config.custom_name_policy
+uci set openclash.config.custom_name_policy='1'
+# 重建 @dns_servers：default=国内 bootstrap（用于解析 DoH 主机名）；nameserver=境外 DoH
+# 有界循环：删一段后其余段前移，故始终删 [0]；上限防 uci 异常时空转
+_i=0
+while [ "$_i" -lt 64 ] && uci -q delete "openclash.@dns_servers[0]"; do
+	_i=$((_i + 1))
+done
+unset _i
+_buffy_add_dns() {
+	_s="$(uci add openclash dns_servers)" || return 0
+	# uci set 只接受单参数 key=value；两参数形式返回 255，会留下空 DNS 段。
+	uci set "openclash.$_s.enabled=1"
+	uci set "openclash.$_s.type=$1"
+	uci set "openclash.$_s.ip=$2"
+	uci set "openclash.$_s.group=$3"
+}
+_buffy_add_dns udp 119.29.29.29 default
+_buffy_add_dns udp 223.5.5.5 default
+_buffy_add_dns https dns.cloudflare.com/dns-query nameserver
+_buffy_add_dns https dns.google/dns-query nameserver
+unset -f _buffy_add_dns
+unset _s
 uci -q delete openclash.config.enable_meta_sniffer
 uci set openclash.config.enable_meta_sniffer='1'
 uci -q delete openclash.config.enable_meta_sniffer_pure_ip
@@ -107,5 +142,41 @@ unset _i _sec _u _p
 # 查询：LuCI → OpenClash → 覆写设置；或 uci show openclash | grep -E 'dashboard_password|authentication'
 # 快照：/etc/init.d/buffy-credentials 每次开机调 /usr/share/buffy/export_credentials.sh 同步到
 #      /etc/openclash-credentials.txt，便于命令行查看当前生效值。
+
+# ── DNS 上游收口 / fake-ip 持久化 ──────────────────────────────────
+# append_wan_dns / append_default_dns 会把 WAN 下发的运营商 DNS 追加进 clash 的
+# nameserver 作为兜底：clash 的 DoH 不可用时会转而问运营商 DNS，等于把 DNS 泄漏出去。
+# 与 /etc/rc.local 删掉 dnsmasq 直连兜底是同一件事的两侧，必须同时关。
+# enable_redirect_dns=1：让插件把 dnsmasq 的上游重定向到 7874（再保险一层）；
+# store_fakeip=1：重启后保留 fake-ip 映射，客户端缓存的 198.18.x.x 仍能命中路由；
+# dnsmasq_noresolv=1：dnsmasq 不再读 /etc/resolv.conf.auto（PPPoE 下发的 DNS）。
+for _kv in append_wan_dns append_default_dns enable_redirect_dns store_fakeip dnsmasq_noresolv; do
+	uci -q delete "openclash.config.$_kv"
+done
+uci set openclash.config.append_wan_dns='0'
+uci set openclash.config.append_default_dns='0'
+uci set openclash.config.enable_redirect_dns='1'
+uci set openclash.config.store_fakeip='1'
+uci set openclash.config.dnsmasq_noresolv='1'
+unset _kv
+
+# ── 登记内置覆写模块（幂等）────────────────────────────────────────
+# 模块文件随镜像发布在 /etc/openclash/overwrite/OC_SelfHeal_AntiLeak；
+# sysupgrade -n 会清空 /etc/config，但镜像文件仍在，因此每次首启都在这里重新登记。
+# enable=1：刷完即生效，无需到 LuCI 手动开启。
+MODULE_NAME='OC_SelfHeal_AntiLeak'
+MODULE_FILE="/etc/openclash/overwrite/$MODULE_NAME"
+if [ -s "$MODULE_FILE" ] && ! uci -q show openclash | grep -q "\.name='$MODULE_NAME'"; then
+	_max_order="$(uci -q show openclash | sed -n "s/^openclash\.[^.=]*\.order='\([0-9]*\)'$/\1/p" | sort -n | tail -1)"
+	uci add openclash config_overwrite >/dev/null
+	uci set "openclash.@config_overwrite[-1].name=$MODULE_NAME"
+	uci set "openclash.@config_overwrite[-1].type=file"
+	uci add_list "openclash.@config_overwrite[-1].config=all"
+	uci set "openclash.@config_overwrite[-1].enable=1"
+	uci set "openclash.@config_overwrite[-1].order=$(( ${_max_order:-0} + 1 ))"
+	unset _max_order
+fi
+unset MODULE_NAME MODULE_FILE
+
 uci commit openclash
 exit 0

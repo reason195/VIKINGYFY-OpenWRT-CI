@@ -63,6 +63,8 @@ on:
         required: false
       SINGBOX_SS_PASSWORD:
         required: false
+      TAILSCALE_AUTHKEY:
+        required: false
 
 permissions:
   contents: write
@@ -84,7 +86,11 @@ env:
 jobs:
   core:
     name: ${{inputs.WRT_SOURCE}}
-    runs-on: ubuntu-latest
+    # 上游 init_build_environment.sh 只白名单 bionic/focal/jammy/noble 等代号；
+    # 2026-11 ubuntu-latest 已切到 Ubuntu 26.04（resolute），脚本直接
+    # "Unsupported OS, use Ubuntu 20.04 instead." 退出，编译在初始化阶段就失败。
+    # 固定到 24.04（noble，脚本支持 GCC13/LLVM23）保持编译环境可用。
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Projects
         uses: actions/checkout@main
@@ -222,6 +228,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
           TELEGRAM_CHAT_ID: ${{secrets.TELEGRAM_CHAT_ID}}
           SINGBOX_SS_PASSWORD: ${{secrets.SINGBOX_SS_PASSWORD}}
+          TAILSCALE_AUTHKEY: ${{secrets.TAILSCALE_AUTHKEY}}
 
       - name: Download Packages
         if: env.WRT_TEST != 'true'

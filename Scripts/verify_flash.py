@@ -26,6 +26,7 @@
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -45,6 +46,7 @@ SKIP_ON_ROUTER = {
     "etc/uci-defaults/92-buffy-firewall.sh",
     "etc/uci-defaults/93-buffy-openclash.sh",
     "etc/uci-defaults/94-buffy-credentials.sh",
+    "etc/uci-defaults/96-tailscale-panel-fix.sh",
 }
 
 # 构建期会与软件包默认配置合并/追加的文件：路由器上可能多出重复块或追加的包用户行。
@@ -205,15 +207,111 @@ def find_named_section(d, type_prefix, name):
     return None
 
 
+def check_dns_servers(d):
+    """@dns_servers 必须恰好是 93 重建的四段（顺序、类型、分组都要对）。"""
+    expected = [
+        ("1", "udp", "119.29.29.29", "default"),
+        ("1", "udp", "223.5.5.5", "default"),
+        ("1", "https", "dns.cloudflare.com/dns-query", "nameserver"),
+        ("1", "https", "dns.google/dns-query", "nameserver"),
+    ]
+    sections = sorted(
+        (key for key in d if re.fullmatch(r"openclash\.@dns_servers\[\d+\]", key)),
+        key=lambda key: int(key.split("[")[1][:-1]),
+    )
+    actual = [tuple(d.get(f"{key}.{opt}") for opt in ("enabled", "type", "ip", "group"))
+              for key in sections]
+    if actual == expected and all(d[key] == "dns_servers" for key in sections):
+        return []
+    return [f"dns_servers 期望 {expected} 实得 {actual}"
+            "（检查 uci set 是否为单参数 key=value，且没有空段或字面引号）"]
+
+
+def check_openclash_runtime():
+    """读 clash 进程实际使用的运行配置（-f），校验覆写钩子与防泄漏链路是否生效。"""
+    pids, error = run("pidof clash")
+    if error or not re.fullmatch(r"\d+", pids):
+        return False, "无法确定唯一 Clash 进程: " + (error or pids or "未运行")
+    cmdline = router_bytes(f"/proc/{pids}/cmdline")
+    if not cmdline:
+        return False, "无法读取 Clash 进程参数"
+    args = cmdline.decode("utf-8", "replace").rstrip("\0").split("\0")
+    if "-f" not in args or args.index("-f") + 1 >= len(args):
+        return False, "Clash 进程参数缺少 -f 配置路径"
+    config_path = args[args.index("-f") + 1]
+    # UCI config_path 指向订阅原稿；只有进程的 -f 才是经过覆写的运行配置。
+    ruby = '''
+v = YAML.load_file(ARGV[0])
+def check(name, cond)
+  puts(cond ? "PASS #{name}" : "FAIL #{name}")
+end
+providers = v['proxy-providers']
+bad = providers.is_a?(Hash) ? providers.select { |_, p| p.is_a?(Hash) && p.dig('override', 'client-fingerprint') != 'chrome' }.keys : []
+check('client-fingerprint', !v.key?('global-client-fingerprint') && bad.empty?)
+dns = v['dns'] || {}
+check('dns.cache-size', dns['cache-size'] == 4096)
+check('dns.listen', dns['listen'] == '127.0.0.1:7874')
+check('dns.respect-rules', dns['respect-rules'] == true)
+check('dns.nameserver', Array(dns['nameserver']) == ['https://dns.cloudflare.com/dns-query', 'https://dns.google/dns-query'])
+check('dns.default-nameserver', Array(dns['default-nameserver']) == ['119.29.29.29', '223.5.5.5'])
+fake = Array(dns['fake-ip-filter'])
+fake_need = ['+.tohno-0.top', '+.de5.net', '+.github.com', '+.jsdelivr.net', '+.duckdns.org',
+             '+.tailscale.com', '+.tailscale.io', '+.tailscale.net']
+check('dns.fake-ip-filter', fake_need.all? { |d| fake.include?(d) })
+policy = dns['nameserver-policy'] || {}
+direct = ['https://doh.pub/dns-query', 'https://dns.alidns.com/dns-query']
+policy_need = ['+.tohno-0.top', '+.de5.net', '+.github.com', '+.jsdelivr.net', 'reason195.duckdns.org']
+covered = policy_need.all? do |domain|
+  policy.any? { |key, servers| key.to_s.split(',').map(&:strip).include?(domain) && (Array(servers) & direct).any? }
+end
+check('dns.nameserver-policy', covered)
+entries = policy.to_a
+cn = entries.index { |k, _| k.to_s.split(',').map(&:strip).include?('geosite:cn') }
+overseas = ['https://dns.cloudflare.com/dns-query', 'https://dns.google/dns-query']
+gp_need = ['+.googleapis.cn', '+.xn--ngstr-lra8j.com', '+.gvt1.com', 'dl.google.com']
+gp_ok = gp_need.all? do |domain|
+  idx = entries.index { |k, servers| k.to_s.split(',').map(&:strip).include?(domain) && (Array(servers) & overseas).any? }
+  idx && (cn.nil? || idx < cn)
+end
+check('dns.nameserver-policy.google-play', gp_ok)
+rules = Array(v['rules'])
+ts_rules = ['DOMAIN-SUFFIX,tailscale.com,DIRECT', 'DOMAIN-SUFFIX,tailscale.io,DIRECT',
+            'DOMAIN-SUFFIX,tailscale.net,DIRECT']
+check('rules.tailscale-direct', ts_rules.all? { |r| rules.include?(r) })
+groups = Array(v['proxy-groups'])
+default = groups.find { |g| g.is_a?(Hash) && g['name'] == '默认代理' }
+auto = groups.find { |g| g.is_a?(Hash) && g['name'] == '自动选择' }
+us = groups.find { |g| g.is_a?(Hash) && g['name'] == '美国优先' }
+# 订阅含「美国自动」时钩子会插 fallback「美国优先」；不含则退回中性「自动选择」首项。
+# 两种都算合格，但首项必须等于其中之一，避免退回「香港策略」这类地区组卡死的旧形态。
+want_first = us ? '美国优先' : '自动选择'
+check('proxy-groups.default-first', default && Array(default['proxies']).first == want_first)
+auto_ok = auto && auto['type'] == 'url-test' && auto['include-all'] == true && auto['filter'].to_s.include?('DIRECT') && auto['filter'].to_s.include?('REJECT')
+check('proxy-groups.auto-select', auto_ok)
+us_ok = us.nil? || (us['type'] == 'fallback'
+                    && Array(us['proxies']) == ['美国自动', '自动选择']
+                    && us['url'].to_s.start_with?('http'))
+check('proxy-groups.us-first', us_ok)
+puts 'CHECK_COMPLETE'
+'''
+    out, error = run("ruby -ryaml -rYAML -I /usr/share/openclash -E UTF-8 -e "
+                     + shlex.quote(ruby) + " " + shlex.quote(config_path), timeout=30)
+    lines = out.splitlines()
+    ok = (not error and lines and lines[-1] == "CHECK_COMPLETE"
+          and all(line.startswith("PASS ") for line in lines[:-1]))
+    return ok, f"配置={config_path}; " + "; ".join(lines) + (f"; {error}" if error else "")
+
+
 RUNTIME_CHECKS = [
     ("固件版本", "cat /etc/openwrt_release"),
     ("内核", "uname -a"),
-    ("OpenClash 关键项", "uci show openclash 2>/dev/null | grep -E 'en_mode|operation_mode|redirect_dns|enable_respect_rules|core_type|core_version|github_address_mod|enable_geoip_dat|enable_custom_domain_dns_server|custom_domain_dns_server|skip_proxy_address|disable_masq_cache|custom_fakeip_filter|china_ip_route|log_level|enable=|config_path'"),
+    ("OpenClash 关键项", "uci show openclash 2>/dev/null | grep -E 'en_mode|operation_mode|redirect_dns|enable_respect_rules|core_type|core_version|github_address_mod|enable_geoip_dat|enable_custom_domain_dns_server|custom_domain_dns_server|enable_custom_dns|custom_name_policy|append_wan_dns|append_default_dns|store_fakeip|dnsmasq_noresolv|skip_proxy_address|disable_masq_cache|custom_fakeip_filter|china_ip_route|log_level|enable=|config_path'"),
     ("核心与规则集", "ls -la /etc/openclash/core/clash_meta 2>/dev/null; ls /etc/openclash/rule_provider/ 2>/dev/null | wc -l; wc -c /etc/openclash/config/MihomoPro.yaml 2>/dev/null"),
     ("clash 进程与端口", "pidof clash; netstat -tln 2>/dev/null | grep -E ':(9090|7890|7891|7893|7874)'"),
     ("开机自检", "ls -la /etc/.openclash-bootstrap-done 2>/dev/null; cat /tmp/boot_selfcheck.log 2>/dev/null | tail -3"),
-    ("dnsmasq 关键项", "uci get dhcp.@dnsmasq[0].cachesize; uci get dhcp.@dnsmasq[0].strictorder; uci get dhcp.@dnsmasq[0].quietdhcp; uci get dhcp.@dnsmasq[0].rebind_domain; cat /tmp/dnsmasq.*.d/60-fallback.conf 2>/dev/null"),
-    ("防火墙", "uci show firewall 2>/dev/null | grep -E 'Allow-WAN|flow_offloading|fullcone'"),
+    ("dnsmasq 关键项", "uci get dhcp.@dnsmasq[0].cachesize; uci get dhcp.@dnsmasq[0].strictorder; uci get dhcp.@dnsmasq[0].quietdhcp; uci get dhcp.@dnsmasq[0].rebind_domain; uci get dhcp.@dnsmasq[0].noresolv; grep -m2 -E '^server=' /tmp/etc/dnsmasq.conf.* 2>/dev/null; ls /tmp/dnsmasq.*.d/60-fallback.conf /tmp/dnsmasq.d/60-fallback.conf 2>/dev/null"),
+    ("防火墙", "uci show firewall 2>/dev/null | grep -E 'Allow-WAN|flow_offloading|fullcone|ts_snat'"),
+    ("Tailscale", "uci show tailscale 2>/dev/null | grep -E 'enabled|accept_dns|advertise_routes|hostname'; tailscale ip -4 2>/dev/null; nft list chain inet fw4 srcnat 2>/dev/null | grep -c '100.64.0.0/10 masquerade'"),
     ("uhttpd / DDNS", "uci show uhttpd 2>/dev/null | grep -E 'redirect_https|listen_https'; uci show ddns 2>/dev/null | grep -E 'ip_interface|enabled|lookup_host'"),
     ("运行时 crontab", "cat /etc/crontabs/root 2>/dev/null"),
 ]
@@ -269,6 +367,9 @@ def check_uci_defaults():
         "core_type": "Meta", "core_version": "linux-arm64",
         "github_address_mod": "https://testingcf.jsdelivr.net/", "enable_geoip_dat": "1",
         "enable_custom_domain_dns_server": "1", "custom_domain_dns_server": "223.5.5.5",
+        "enable_custom_dns": "1", "custom_name_policy": "1",
+        "append_wan_dns": "0", "append_default_dns": "0",
+        "enable_redirect_dns": "1", "store_fakeip": "1", "dnsmasq_noresolv": "1",
         "custom_fakeip_filter": "1", "skip_proxy_address": "1",
         "enable_meta_sniffer": "1", "enable_meta_sniffer_pure_ip": "1",
         "geo_auto_update": "1", "geoip_auto_update": "1", "geosite_auto_update": "1",
@@ -282,6 +383,12 @@ def check_uci_defaults():
         expected[f"{name}_update_week_time"] = "1"
     mism = [f"{k}: 期望{v!r}≠实际{d.get('openclash.config.' + k)!r}"
             for k, v in expected.items() if d.get("openclash.config." + k) != v]
+    mism.extend(check_dns_servers(d))
+    # 内置覆写模块必须已登记并启用（sysupgrade -n 清空 /etc/config 后由本脚本重新登记）
+    mod_sec = find_named_section(d, "openclash.@config_overwrite", "OC_SelfHeal_AntiLeak")
+    if not (mod_sec and d.get(mod_sec + ".enable") == "1" and d.get(mod_sec + ".type") == "file"):
+        mod_enable = d.get(mod_sec + ".enable") if mod_sec else None
+        mism.append(f"覆写模块 OC_SelfHeal_AntiLeak 未登记/未启用（enable={mod_enable!r}）")
     dash_pw = d.get("openclash.config.dashboard_password")
     api_sec = "openclash.@authentication[0]"
     api_en = d.get(f"{api_sec}.enabled")
@@ -325,6 +432,26 @@ def check_uci_defaults():
                     f"/etc/init.d/buffy-credentials 可执行={'✓' if init_ok == 'ok' else '✗'} "
                     f"/etc/rc.d/S99buffy-credentials 软链={'✓' if link_ok == 'ok' else '✗'}"
                     "（应由 94-buffy-credentials.sh enable 建立）"))
+
+    # 96-tailscale-panel-fix.sh：helper 补丁（tailscale0 IPv4 + exit-code）+ fw4 SNAT include 注册
+    ts = uci_dump("tailscale")
+    ts_en = ts.get("tailscale.settings.enabled")
+    ts_dns = ts.get("tailscale.settings.accept_dns")
+    ts_routes = ts.get("tailscale.settings.advertise_routes")
+    if not isinstance(ts_routes, list):
+        ts_routes = [ts_routes] if ts_routes else []
+    d = uci_dump("firewall")
+    snat_type = d.get("firewall.ts_snat.type")
+    snat_path = d.get("firewall.ts_snat.path")
+    helper, _ = run("grep -c 'TS_IP4=' /usr/sbin/tailscale_helper 2>/dev/null", timeout=10)
+    ts_ok = ts_en == "1" and ts_dns == "0" and "192.168.1.0/24" in ts_routes
+    snat_ok = snat_type == "script" and snat_path == "/etc/fw4-ts-snat.sh"
+    helper_ok = helper.strip() not in ("", "0")
+    ok = ts_ok and snat_ok and helper_ok
+    results.append(("96-tailscale-panel-fix.sh", ok,
+                    "helper 已补 IPv4、SNAT include 已注册、tailscale 开关/路由正确" if ok else
+                    f"enabled={ts_en!r} accept_dns={ts_dns!r} routes={ts_routes!r} "
+                    f"ts_snat={snat_type!r}:{snat_path!r} helper补丁={'✓' if helper_ok else '✗'}"))
 
     return results
 
@@ -379,6 +506,10 @@ def main():
         print(f"{'✅' if ok else '❌'} [{script}] {detail}")
         if not ok:
             failures += 1
+    ok, detail = check_openclash_runtime()
+    print(f"{'✅' if ok else '❌'} [Clash 运行配置] {detail}")
+    if not ok:
+        failures += 1
 
     print("\n===== 3. 运行时状态抽查 =====")
     for label, cmd in RUNTIME_CHECKS:

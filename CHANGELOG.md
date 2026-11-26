@@ -1,70 +1,139 @@
-# 变更记录（2026-11-05）：刷机默认不保留配置（sysupgrade -n）
+# 变更记录（2026-11-28）：上游换 `owrt` 分支 + Tailscale 整套 + 美国优先
 
-**诉求**：下次刷机不保留配置。此前两条刷机路径（PC 端 `upgrade_firmware.py`、路由器端 cron `auto_upgrade.sh`）默认都是「保留配置」，而保留路径有个已知死结：`/etc/rc.local` 在 `/lib/upgrade/keep.d/base-files-essential` 的永久保留清单里，保留升级会让它停在旧固件版本、新版的开机钩子永远进不了运行层（2026-09-29 实证）。改成默认不保留，镜像里的 `/etc` 才真正生效。
+**背景**：两件事一起做。
 
-## 一、`Scripts/upgrade_firmware.py`：`--reset` 删除，重置成默认，新增 `--keep-config`
+1. **上游停更**：旁路由项目（fork 自本项目）报「上游不更新了」，核查 `VIKINGYFY/immortalwrt` 发现 `main` 最后一个提交停在 **2026-10-15**（`f9b0ce7`），而 `owrt` 分支仍在更新（**2026-11-26** `f814b1b`）。两个项目共用同一上游，所以本项目同样切 `owrt`。
+2. **补齐之前跳过的两项**：Tailscale 整套与「美国优先」当时按「旁路由专用」跳过，实际上与路由角色无关（主路由跑 Tailscale 还能把整个 LAN 段带进 tailnet），本次一并移植。
 
-- 同一根轴上只留一个开关：不带参数即 `sysupgrade -n`，`--keep-config` 才走保留路径。旧的 `--reset` 直接删除，误传会被 argparse 拒掉（`unrecognized arguments: --reset`）并在刷机前退出，不会静默按旧语义执行。
-- 刷机确认语与 dry-run 输出都会打印实际模式；重置提示里附备份命令 `sysupgrade -b /tmp/backup.tar.gz`（脚本本身不自动备份）。
+## 一、CI 上游：`main` → `owrt`（含一次性手动刷机）
 
-## 二、路由器端 `auto_upgrade`：出厂默认 `keep_config '0'`
+- `.github/workflows/QCA-ALL.yml`：`commits/main` → `commits/owrt`（判断上游是否有新提交）；release 前缀筛选 `-main-` → `-owrt-`；`WRT_BRANCH: main` → `owrt`（真正决定编译哪条分支，注释写明停更日期）。
+- **副作用（必须知情）**：tag 前缀从 `IPQ60XX-WIFI-NO-VIKINGYFY-main-` 变成 `-owrt-`。**已在跑 `-main-` 固件的设备必须手动刷一次**——旧固件里的 `auto_upgrade.sh` 写死了旧前缀，跨前缀不会自己升。手动刷：`python3 Scripts/upgrade_firmware.py --tag IPQ60XX-WIFI-NO-VIKINGYFY-owrt-<时间>`，或 LuCI 上传镜像。
+- `Files/usr/share/buffy/auto_upgrade.sh`：
+  - 删掉写死的 `TAG_PREFIX="…-main-"`，改为运行时从 `/etc/buffy-version`（构建期写入，内容就是本固件 tag）**剥掉末尾日期**推导前缀——CI 以后再换分支不用改代码。
+  - 推导不出来（旧固件没有 `/etc/buffy-version`、或文件被改坏）→ **跳过自动刷机**、每 boot 只推一次告警，并提示用 `upgrade_firmware.py --tag` 手动升。宁可停更，也不能把旁路由/别的分支的镜像刷进主路由（两边的 network/dhcp/防火墙是整套互换的）。
+  - atom 里没有本分支的 release（换分支首日必然如此）→ 记一行日志后退出，不再走 `fail()` 每天推告警，避免掩盖真正的下载/校验失败。
+  - 顺带得到**跨项目防护**：旁路由项目的 tag 前缀不同，即使误判也不会被选中。
 
-- `Files/etc/config/auto_upgrade`：`keep_config` 由 `1` 改 `0`，注释写明理由与手工改回的命令。
-- `Files/usr/share/buffy/auto_upgrade.sh`：判定从「`=0` 才加 `-n`」翻转为「只有 `=1` 才保留」——选项缺失、为空或任意非 1 值一律按 `-n` 处理。配置段缺失的自愈重建同步改为 `keep_config=0`，否则一次 `-n` 刷机清空 `/etc/config` 后，脚本会把旧默认 `1` 补回去，改动当场失效。
-- 模式判定上移到流程早期（下载之前）并 `log "刷机模式：…"`，删除 sha256 通过后那段重复推导；原先只有真刷机才看得到模式，现在日志里每次运行都有。
+## 二、Tailscale 整套（官方包 + 社区面板）
 
-## 三、测试
+- `Config/GENERAL.txt`：`CONFIG_PACKAGE_tailscale`、`CONFIG_PACKAGE_luci-app-tailscale`（管理页在 LuCI「系统→Tailscale」）、`CONFIG_PACKAGE_luci-i18n-tailscale-zh-cn`。
+- 新增 `Files/etc/config/tailscale`：`enabled=1`、`port=41641`、`config_path=/etc/tailscale`、`fw_mode=nftables`、`accept_dns=0`、`advertise_routes=192.168.1.0/24`、`hostname=owrt-main`、`flags=--advertise-tags=tag:router`、`authkey=@@TAILSCALE_AUTHKEY@@`。
+  - `accept_dns` **必须 0**：接受 `100.100.100.100` 会顶掉 dnsmasq → OpenClash 的 fake-ip 分流链，全屋 DNS 直接失效。
+  - `hostname` 显式写死：系统 hostname 是 `OWRT`，同 tailnet 里已有旁路由的 `owrt`，不指定时 Tailscale 会自动加 `-1` 后缀。
+  - `--advertise-tags=tag:router`：注册即带 tag（tag 节点不受 node key 过期限制）；子网路由要自动批准还需在 tailnet ACL 里写 `autoApprovers`（`"routes": {"192.168.1.0/24": ["tag:router"]}`），否则每次仍要手动点批准。
+- 新增 `Files/etc/fw4-ts-snat.sh`（**100755**）：`nft add rule inet fw4 srcnat oifname "br-lan" ip saddr 100.64.0.0/10 masquerade`（幂等）。本固件没有 iptables，tailscaled 的 linuxfw 初始化会失败，**既不配 `tailscale0` 的 IPv4 也不建 SNAT**；缺这条时客户端能 ping 通路由器但访问不了 LAN 设备（回包目的地是 100.64.0.0/10，主路由不认）。
+- 新增 `Files/etc/uci-defaults/96-tailscale-panel-fix.sh`（首启一次，装面板时才执行）：
+    1. 删掉 helper 末尾的 `exit 0`——`[ -n "$(uci changes firewall)" ] && …` 在无待提交改动时返回 1，procd 判实例崩溃无限重启，`tailscale up --reset` 反复执行。
+    2. 追加幂等补丁给 `tailscale0` 配 IPv4（`tailscale ip -4` + `ip addr add`）。
+    3. 注册 `firewall.ts_snat`（`type=script`、`path=/etc/fw4-ts-snat.sh`）→ 每次 firewall reload 自动重建 SNAT。
+    4. 给 `/usr/share/rpcd/acl.d/luci-app-tailscale.json` 补 `"/sbin/logread": ["read"]`：面板「日志」页先 `stat` 探测路径，包自带 ACL 只有 exec 权限，探测失败页面就空白。
+- 控制面/中继域名：`openclash_custom_overwrite.sh` 追加 `+.tailscale.com/.io/.net` 到 `fake-ip-filter`，并在 `rules` 最前插 `DOMAIN-SUFFIX,… ,DIRECT`；静态列表 `openclash_custom_fake_filter.list` 同步补一份兜底。fake-ip 会把 `log.tailscale.com` 解成 `198.18.x`，tailscaled 连 fake-ip 地址必然 `i/o timeout` 卡在 doLogin（26.11.22 旁路由实测）。
+- Secrets 全链路接线：`Scripts/Settings.sh` 新增 `inject_secret "TAILSCALE_AUTHKEY" … 0`（可选，缺失只装不登录）、`WRT-CORE.yml` 的 `workflow_call.secrets` + 环境变量、`QCA-ALL.yml` 的 `secrets:` 映射。建议在 Tailscale 后台建 **Reusable**（不带 Ephemeral）key：重刷/换机不留孤立节点。
+- `auto_upgrade.sh`：保留配置刷机时把 `/etc/tailscale/tailscaled.state` 打包并以 `sysupgrade -f` 带上（该文件不在默认保留清单里），否则每次刷机都用同一 authkey 重新注册，tailnet 里冒出 `owrt-main-1/2` 且子网路由要重新批准。
+- `Scripts/verify_flash.py`：新增 `96-tailscale-panel-fix.sh` 运行时校验（helper 补丁、`firewall.ts_snat`、开关/路由）、Tailscale 抽查项；`SKIP_ON_ROUTER` 补 96（首启已消费）。
 
-- `Tests/test_auto_upgrade.sh`：新增用例 7（`keep_config` 为 0／空／非 1 值 → 重置模式），用例 1 补保留模式断言，用例 6 补「重建的默认值不保留配置」断言。**25 passed / 0 failed**（原 20）。
-- `Tests/test_upgrade_firmware.py`：新增 `FlashModeDefaultTest`（dry-run 默认输出 `sysupgrade -n`、`--keep-config` 去掉 `-n`、`--reset` 被拒）。**28 passed / 0 failed**（原 25）。
+## 三、美国优先（默认代理优先走美国，全挂自动回退）
 
-## 四、生效时点（重要）
+- `openclash_custom_overwrite.sh`：订阅含「美国自动」（url-test）时注入/更新 `fallback` 组「美国优先」（`proxies: [美国自动, 自动选择]`、`interval 180`、`tolerance 50`、`timeout 5000`），并把「默认代理」首项指向它：`[美国优先] + 原有成员 + [自动选择] + [直接连接]`。
+  - 为什么是 fallback 包着 url-test：fallback 只看成员 `Alive()`；**不能**把 `美国策略`（select）直接放进 fallback——select 恒为 alive，节点全挂也不会切（26.11.08 旁路由踩过）。
+  - 订阅里没有「美国自动」（换机场/改名）时退回中性行为：首项仍为「自动选择」，绝不因缺组让默认代理空掉。
+  - `interval` 取 **180** 与覆写模块 `OC_SelfHeal_AntiLeak` 一致：模块先应用、钩子后应用（钩子值胜出），两边不一致会让人误以为模块没生效。
+  - 「自动选择」只加一次（首项就是它时不再重复），避免 select 组里出现两条同名项。
+- 新增 `Files/usr/share/buffy/us_failover.sh`（**100755**，cron 每分钟）：机场美国节点全掉线时，`美国自动` 会卡在死节点、`美国策略` 可能被手动钉在死节点上。脚本用 Clash REST API 的 `/group/<组>/delay` 判断——**只有测试成功的节点才出现在结果里**（延迟 0 也算死），当前节点不在/为 0 就切到组内任一存活节点；`美国策略` 钉在属于「美国自动」的死节点上则切回「美国自动」。`/tmp/us_failover.lock` 防 cron 叠堆，日志 `/tmp/us_failover.log`，核心未运行/取不到面板密码/订阅无该组时静默退出。
+- `Files/etc/crontabs/root`：`* * * * * /usr/share/buffy/us_failover.sh`。
 
-- PC 端脚本改完即刻生效；路由器端 cron 用的是**设备上正在运行**的那份脚本，因此要等刷入含本改动的镜像后，cron 才按新默认走。当前实机跑 26.11.05 镜像（内置旧默认 `keep_config=1`），明天的自动升级仍是保留配置。
-- 想让下一次自动升级就不保留配置，需在路由器上把运行值改掉（不涉及刷机）：`uci set auto_upgrade.@auto_upgrade[0].keep_config='0' && uci commit auto_upgrade`。
-- 附注：本次会话中一次 `sysupgrade -n` 重刷已下发并重启完成（同一版本 26.11.05-08.44.17），刷机前配置备份在 `~/backups/buffy-config-26.11.05.tar.gz`（sha256 `a4f972010b67a02e5c3e5c40c7b7c74b1b579f5ba45cdd6f42bc86957ae7c32d`）。
+## 四、测试与校验
 
+- 新增 `Tests/test_us_failover.py`（7 passed）：mock `curl` 驱动真实脚本，覆盖死节点切换、存活不打扰、延迟 0 视为死、策略组回切、非美国节点不动、组缺失静默、静态接线（含 cron 行）。
+- 新增 `Tests/test_tailscale_stack.py`（4 passed）：UCI 关键项（`accept_dns=0`、路由段、hostname、占位符）、SNAT 脚本语义与 **100755**、96 的四处修补、包与 secret 三层接线。
+- `Tests/test_openclash_overwrite.py`：新增美国优先端到端断言（`fallback`、成员恰为 `[美国自动, 自动选择]`、首项为 `美国优先`、无重复「自动选择」、仍不得出现 `default-selected`）；ruby 存在时由 15 项全绿覆盖。
+- `Tests/test_auto_upgrade.sh`：33 passed——用例 3 改为「无 `buffy-version` → 跳过刷机 + 单次告警 + 不拉 release 源」，新增用例 8（固件标识属于别的分支 → 不跨分支刷机）、用例 9（保留配置时打包 Tailscale state、重置刷机时不打包）。
+- 全量：`python -m pytest Tests -q` → Windows **63 passed / 3 skipped**（无 ruby）、WSL（有 ruby）**66 passed**；shell：`test_auto_upgrade.sh` 33、`test_buffy_credentials_init.sh` 18、`test_export_credentials.sh` 18、`test_openclash_auth_migration.sh` 25、`test_openclash_dns_servers.sh` 69，全部 0 failed。
 
+## 五、与旁路由项目的有意差异
 
-# 变更记录（2026-10-27）：SOCKS5/HTTP(S) 认证恢复由 OpenClash 自己生成
+- 本机是主路由：IPv6 保持开启、`192.168.1.1`、PPPoE WAN、DDNS+acme 全保留；不写 `bypass_gateway_compatible`，不做 IPv6 关闭/`filter_aaaa`。
+- 节点名 `owrt-main`（旁路由是 `owrt`），避免同一 tailnet 里撞名出现 `owrt-1`。
+- 宣告 `192.168.1.0/24`（与旁路由的 LAN 段一致是有意的：主路由才是该网段的网关，tailnet 内访问 LAN 设备应指向主路由）。
 
-**现象**：路由器上 OpenClash 的代理认证（`openclash.@authentication`）仍为旧版仓库脚本自造的值——`username=clash`（小写）+ 24 位十六进制口令；而 Dashboard 密钥已在 2026-10-07 迁移到上游默认的 8 位随机值。两者不一致，认证信息没有回到 OpenClash 自己生成。
+本次唯一的行为性取舍仍是 `empty-fallback: DIRECT`（见上一版说明）：全部节点失效时放行直连，不断网但会暴露真实出口。
 
-**根因**：上游 `luci-app-openclash` 的 `/etc/uci-defaults/luci-openclash` 只在 **`openclash.@authentication[0]` 完全不存在** 时才生成（`username="Clash"` + 8 位随机字母数字）。升级保留的旧 UCI 段非空，判断直接跳过 → 旧口令永久生效。Dashboard 密钥可用「值为空」判断，认证段只能用「段是否存在」判断，所以 10-07 的迁移对认证段无效。
+# 变更记录（2026-11-27，上一版）：从旁路由项目移植通用优化（DNS 防泄漏 / 覆写模块 / CI 时间窗）
 
-## 一、`Files/etc/uci-defaults/93-buffy-openclash.sh`：新增认证段迁移
+**背景**：旁路由项目（`VIKINGYFY-OpenWRT-CI-SideRouter`）在实机上踩并修掉了一批与「路由角色」无关的问题：dnsmasq 直连兜底导致 DNS 泄漏、fake-ip 与订阅域名打架导致首启拉不到订阅、Mihomo 新版核心移除 `global-client-fingerprint` 导致订阅 EOF、默认代理总是落在香港（全挂就断网）。这里把其中**与主路由不冲突**的部分逐项移植过来；旁路由专用的角色改动（关 IPv6、`filter_aaaa`、`bypass_gateway_compatible`、空闲服务裁剪、Tailscale 栈、美国优先分组等）一律不动，理由列在最后一节。
 
-- 循环遍历 `@authentication[N]`，仅在 **两个特征同时命中** 时删除该段：用户名恰为 `clash`（上游默认是 `Clash`）且口令为 24 位十六进制（旧版 `rand_hex()` 产物）。用户改过名或口令的一律视为自定义值保留。
-- 删除后由排在它之后的 `luci-openclash` 按上游默认逻辑重建（小写 `clash` 段删除、后续段下标前移的处理已在循环内考虑）。
-- 本文件以数字开头、先于 `luci-openclash` 执行，这正是「先清旧值、让上游补生成」能成立的前提。
+## 一、DNS 防泄漏：删掉 `60-fallback.conf`，上游只留 `127.0.0.1#7874`
 
-## 二、`Scripts/verify_flash.py`：旧值残留检测
+- `Files/etc/rc.local`：不再写 `60-fallback.conf`（直连 223.5.5.5 等）。dnsmasq 在「同一域名并发查询 / 客户端重传」时会跳过忙碌的 `127.0.0.1#7874` 改走备用上游，这条备用上游就是泄漏源（26.11.24 实机抓到）。改为启动时主动 `rm -f "$DIR/60-fallback.conf"`（`DIR` 从生成的 `/tmp/etc/dnsmasq.conf.*` 里读 `conf-dir`，兼容 `/tmp/dnsmasq.<cfgid>.d` 与 `/tmp/dnsmasq.d`）再重启 dnsmasq。
+- `Files/etc/uci-defaults/93-buffy-openclash.sh`：`append_wan_dns=0`、`append_default_dns=0`、`enable_redirect_dns=1`、`store_fakeip=1`、`dnsmasq_noresolv=1`，并开启 `enable_custom_dns` / `custom_name_policy`、按固定集合重建 `openclash.@dns_servers`（119.29.29.29、223.5.5.5 为 default；Cloudflare / Google DoH 为 nameserver），旧段与业主手改段一律先删后建（幂等，上限 64 段防死循环）。
+- **代价（必须知情）**：Clash 未启动或崩溃时，LAN 客户端**没有 DNS 可用**（不再有直连兜底），表现为「上不了网」。这是防泄漏的必然取舍：旁路由项目里实测过「看似能用实际在泄漏」比「明确不能用」更难排查；排障入口是 `/usr/share/buffy/health_check.sh` 与 `/tmp/openclash.log`。
+- DDNS 仍依赖「第二DNS服务器」（`enable_custom_domain_dns_server=1` + `custom_domain_dns_server=223.5.5.5` + `openclash_custom_domain_dns.list`），用于 acme DNS-01 解析 `reason195.duckdns.org`，本项保留不动。
 
-第 2 节原有的「认证已生成且非空」校验挡不住旧值，新增一条：`username=clash` 且口令为 24 位 hex 时明确报「仍为旧版自造值，迁移未生效」，避免静默通过。
+## 二、订阅域名自动进 fake-ip-filter / nameserver-policy
 
-## 三、`Tests/test_openclash_auth_migration.sh`（新增）
+- 新增 `Scripts/openclash_sub_domains.py`（构建期，无 PyYAML 依赖）：从 `MihomoPro.yaml` 的 `proxy-providers.*.url` 取主机名，向 `openclash_custom_fake_filter.list` 追加 `+.host`（已存在则跳过），向 `openclash_custom_domain_dns_policy.list` 追加带引号的 `'+.host': [国内 DoH]` 条目。
+- `Scripts/Handles.sh` 在注入订阅后调用（仅 `GITHUB_WORKSPACE` 存在时），失败只 `WARN`，静态列表照旧生效。
+- `Files/etc/openclash/custom/openclash_custom_fake_filter.list`：补 `+.tohno-0.top` / `+.de5.net` / `+.aisaka-taiga.com` / `+.github.com` / `+.githubusercontent.com` / `+.githubassets.com` / `+.jsdelivr.net`，保留 `+.duckdns.org`（DDNS/acme）。
+- 新增 `Files/etc/openclash/custom/openclash_custom_domain_dns_policy.list`：Google Play 四个域名（`+.googleapis.cn` / `+.xn--ngstr-lra8j.com` / `+.gvt1.com` / `dl.google.com`）**排在 `geosite:cn` 之前**并走境外 DoH（否则 Play 下载被国内 DoH 解析到错误 CDN）；`geosite:cn,private,apple` 走 `doh.pub` / `dns.alidns.com`；订阅域与 DDNS 域同样直连国内 DoH，保证「代理还没起来也能解析」。
+- `Files/etc/rc.local`：开机自愈补齐两个列表（`/rom` 恢复 + `chmod 644`），漏一个都会在 `sysupgrade -n` 首启时拉不到订阅。
 
-沙箱测试：mock uci 支持 `get/set/delete/commit` 与 `@section[N]` 删除后的下标前移，直接运行真实的 93 脚本。7 个用例 25 项断言——旧值清除且无关配置保留、上游默认值不动、用户自定义口令保留、旧段与用户段共存时只删旧段且用户段完整前移、无段不凭空生成、二次执行幂等、Dashboard 密钥迁移回归。**25 passed / 0 failed**。
+## 三、运行配置覆写钩子 `openclash_custom_overwrite.sh`
 
-**影响面**：已刷旧固件的路由器在首次升级到含本改动的固件后，认证口令会由旧 24 位 hex 变为上游新生成的 8 位随机值，使用 `clash:旧口令` 配置的 SOCKS5/HTTP(S) 客户端需重新填写；新值见 `/etc/openclash-credentials.txt` 的 `api_username` / `api_password`。全新刷机路径不变（本来就由上游生成）。
+新文件 `Files/etc/openclash/custom/openclash_custom_overwrite.sh`（100755，openclash 生成 `config.yaml` 后调用，`$1` 为配置路径）：
 
-# 变更记录（2026-10-25）：手动触发也执行上游更新检查（结论仅记录，仍强制编译）
+- `ruby_edit` 把 `dns.cache-size` 设为 `4096`、`dns.listen` 设为 `"127.0.0.1:7874"`（带引号，YAML 里必须是字符串，裸 `:7874` 会被解析成哈希失败）。
+- 删掉顶层 `global-client-fingerprint`（Mihomo 新版已移除该键，留着会让订阅下载 EOF 死循环），改为给每个 `proxy-providers.*` 注入 `override.client-fingerprint: chrome`；用户自定义过的值不覆盖。
+- 注入/更新跨地区 url-test 组「自动选择」（`include-all`、过滤掉 `DIRECT|REJECT`、180s 内失败即换），并把「默认代理」的首项换成它（用户原有节点全部保留在后面），避免某个地区全挂时默认代理指着空组。
 
-**现象**：手动触发（`workflow_dispatch`）此前完全跳过上游检查直接编译，运行日志里看不到「本次构建相对上次发布的上游状态」，与定时任务的检查链路不一致。
+## 四、内置覆写模块 `OC_SelfHeal_AntiLeak`
 
-**处理**：`QCA-ALL.yml` 的 check 任务中，`Get Upstream Commit` / `Get Last Built Commit` 两步去掉「仅定时/仅检查才执行」的 `if` 条件，所有触发方式都会获取并对比哈希；`Compare` 步骤重构为两段——先统一对比并输出「检查结果：…」（无更新 / +N 提交 / 哈希获取或解析失败按有更新），再按触发方式决定 skip：手动触发（非 `CHECK_ONLY`）保留强制编译语义，检查结论仅写入日志（`skip=false`）；定时与 `CHECK_ONLY` 行为不变（无更新则 `skip=true` 跳过编译）。已通过 `bash -n` 语法校验。
+- 新文件 `Files/etc/openclash/overwrite/OC_SelfHeal_AntiLeak`（`[General]` + `[YAML]` 两段）：`ENABLE_RESPECT_RULES=1`、`APPEND_WAN_DNS=0`；`proxy-providers`（http 类型）每小时刷新 + 180s 健康检查（`https://cp.cloudflare.com/generate_204`、期望 204、不懒加载）；所有 `url-test|fallback|load-balance` 组统一 180s、5000ms 超时、`empty-fallback: DIRECT`。
+- **不写** `IPV6_ENABLE` / `IPV6_DNS`、不写 `dns.ipv6: false`：本机是主路由，IPv6 要保留。
+- **fail-open 取舍**：`empty-fallback: DIRECT` 表示组内节点全部失效时放行直连——不断网，但流量以真实出口出去（暴露公网 IP）。要「断网也不直连」把该行改成 `empty-fallback: REJECT`。
+- 该机制在旁路由项目 2026-11-14 已实机验证（`/proxies` 接口可见各组的 `emptyFallback`/`expectedStatus`、provider `interval` 生效），本次只调整间隔参数。
+- `93-buffy-openclash.sh` 幂等登记该模块（`config_overwrite` 段，`type=file`、`enable=1`、`order` 取最大 +1），`sysupgrade -n` 清空 `/etc/config` 后自动补回。
 
-# 变更记录（2026-10-25）：release 正文改为具体设备名的单设备描述
+## 五、健康检查与刷机校验
 
-**现象**：`WRT-CORE.yml` 的 release 正文固定写「这是个平台固件包，内含多个设备！」「请注意选择你需要的设备固件！」，但本项目仅构建一个设备（`IPQ60XX-WIFI-NO` → `jdcloud_re-cs-07`），每次发布的产物只有一套固件，描述会误导用户以为需要在多设备固件中挑选。
+- `Files/usr/share/buffy/health_check.sh`：第 3 节由「备用上游是否部署」改为「防泄漏」——`conf-dir` 里存在 `60-fallback.conf` 直接 `bad`；没有且 `/tmp/etc/dnsmasq.conf.*` 里唯一 `server=127.0.0.1#7874` 才 `ok`。
+- `Scripts/verify_flash.py`：新增 `check_dns_servers()`（`@dns_servers` 必须恰为重建的四段）、覆写模块登记校验、运行时 Clash 配置校验（`client-fingerprint`、`cache-size`、`listen`、`respect-rules`、`nameserver`、`default-nameserver`、fake-ip-filter 与 nameserver-policy 覆盖、Google Play 顺序、「自动选择」注入），第 3 节关键项增加新 uci 选项与 dnsmasq 实际 `server=` 行。
 
-**处理**：`Initialization Values` 步骤新增 `WRT_DEVICE`——从 `Config/$WRT_CONFIG.txt` 的 `CONFIG_TARGET_DEVICE_*_DEVICE_*` 行提取具体设备名（与 `WRT_TARGET`/`WRT_WIFI` 同为动态推导，核心保持可复用、不硬编码设备）。正文开头改为「这是（设备名）单设备固件包！」「刷机前请确认设备型号与下方配置相符！」，信息区在 配置/平台 之后新增「设备：」一行；「全系带开源硬件加速」因「全系」隐含多设备，改为「开源硬件加速已内置」。正文其余动态字段不变。
+## 六、CI：固定 `ubuntu-24.04`，定时提前到 00:17（北京）
 
-# 变更记录（2026-10-07）：旧版 OpenClash Dashboard 密钥迁移到上游默认 8 位生成
+- `WRT-CORE.yml`：`runs-on: ubuntu-latest` → `ubuntu-24.04`。2026-11 起 `ubuntu-latest` 指到 Ubuntu 26.04（resolute），上游 `init_build_environment.sh` 的代号白名单不含它，直接 `Unsupported OS, use Ubuntu 20.04 instead.` 退出。
+- `QCA-ALL.yml`：`cron: '0 20 * * *'` → `'17 16 * * *'`。GitHub schedule 是 best-effort（实测延迟 2h20m~5h49m），原 04:00 的 release 落在 11:15~12:02，全部晚于设备 10:07 的 auto_upgrade，设备永远刷前一天固件；提前 4 小时后按最差 8h 约 08:00 出包，当天可刷。分钟避开 `:00` 整点排队高峰。
+- `Auto-Clean.yml` 注释同步新 cron（逻辑未变）。
 
-**现象**：路由器上的 Dashboard 登录密钥仍为旧版项目脚本生成的 24 位十六进制值。虽然新脚本已交由 OpenClash 默认生成，但升级保留的旧 UCI 值非空，上游只在值为空时生成，因此不会自动切换。
+## 七、测试
 
-**处理**：`Files/etc/uci-defaults/93-buffy-openclash.sh` 仅识别并删除旧版格式的 24 位十六进制 Dashboard 密钥；随后由排在它之后运行的 `luci-openclash` 生成默认 8 位随机字母数字密钥。其他格式的用户自定义密钥和 API 认证配置保持不变。
+新增 5 个测试文件（从旁路由项目移植并按主路由语义改写）：
+
+- `Tests/test_openclash_dns_servers.sh`（新增，**69 passed**）：mock uci 跑真实 93，覆盖空状态/残留 5 段/引号污染/幂等/与认证迁移循环共用 `_i`/后续选项落地/覆写模块负下标登记与幂等；mock 的 `sec_name` 支持负下标、新增 `show`。
+- `Tests/test_openclash_overwrite.py`（6 passed, 2 skipped）：`ruby_edit` 只改两处且 `listen` 带引号、缺文件/空配置不写、不得注入 `default-selected`、国内流量组不被劫持；`ruby` 存在时做端到端 YAML 断言（本机无 ruby 故 skip）。
+- `Tests/test_openclash_overwrite_module.py`（6 passed）：三段格式、General 只含两个键且**不得出现 IPv6 关闭键**、YAML 段 180s/5000ms/`empty-fallback`、93 登记与 `sh -n`。
+- `Tests/test_openclash_sub_domains.py`（7 passed）：订阅域名提取/幂等/两种列表格式/机场换域名演练/静态列表覆盖当前机场。
+- `Tests/test_placeholder_syntax.py`、`Tests/test_secret_wiring.py`：占位符四层接线完整性（本仓库原本即通过，加入回归）。
+
+全量：`python -m pytest Tests -q` → **52 passed, 2 skipped, 32 subtests passed**；shell：`test_auto_upgrade.sh` 25、`test_buffy_credentials_init.sh` 18、`test_export_credentials.sh` 18、`test_openclash_auth_migration.sh` 25、`test_openclash_dns_servers.sh` 69，全部 0 failed。
+
+## 八、未移植项（及理由）
+
+下列改动在旁路由项目里成立，但与本机「主路由」角色冲突或本机无对应条件，本次不动（2026-11-28 起 Tailscale 与「美国优先」已按主路由语义移植，见上一版说明）：
+
+- **关 IPv6 / `filter_aaaa` / `dns.ipv6: false`**：主路由要保留 IPv6（WAN 侧有公网段、LuCI/SSH 走 v6 放行），关掉等于自断 v6 入口。
+- **`bypass_gateway_compatible` / 关 DHCP / LAN 侧参数**：这些是旁路由把网关指向主路由的配套改动；本机就是网关与 DHCP 服务器（`192.168.1.1`、PPPoE WAN），照抄会直接断网。
+- **空闲服务裁剪（`95-buffy-idle-services.sh`）**：旁路由为省内存裁剪常驻服务；主路由需要 DDNS/acme/防火墙/监控常驻。
+- **Tailscale 栈**（`/etc/config/tailscale`、`fw4-ts-snat.sh`、面板修补）：本次之前未移植，因为主路由上还要额外核对「accept_dns 与 OpenClash fake-ip 的冲突」「tailscaled 无 iptables 时子网路由 SNAT」，需实机验证后再合入（26.11.28 已完成，见本节顶部说明）。
+- **美国优先分组**：旁路由默认代理直接指向美国 fallback；主路由订阅以香港为主且已有跨地区「自动选择」兜底，当时判断收益有限（26.11.28 已移植，默认代理首项改为「美国优先」）。
+- **`Sync-Packages.sh` 补丁 / `WRT_REF` 固定上游提交**：旁路由项目用于锁定特定上游快照，本项目仍跟 `owrt` 分支头（现在有 `auto_upgrade.sh` 的前缀保护，跨项目/跨分支镜像不会被误刷）。
+- **nikki 配置**：旁路由自用（与 OpenClash 二选一的核心），主路由不装。
+
+## 九、副作用清单（刷机前请确认）
+
+- 防泄漏后 Clash 崩溃 = 全屋 DNS 不可用（无兜底）；`empty-fallback: DIRECT` 是唯一的 fail-open 点。
+- `cache-size 4096` 与各 provider 每小时刷新会略增内存占用（实测旁路由 100MB 级，主路由更宽裕）。
+- 「自动选择」为 `include-all` + 180s url-test，机场节点多时首启会有一次集中测速（约 1~2 分钟）。
 
 # 变更记录（2026-09-29 晚）：修复凭据快照开机钩子被 keep.d 静默吞掉 —— 改由 init 脚本投递
 

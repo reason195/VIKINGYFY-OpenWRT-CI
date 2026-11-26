@@ -1,0 +1,34 @@
+# OpenClash 自定义 nameserver-policy（需 openclash.config.custom_name_policy=1）
+# 目的：国外域名走 @dns_servers 的 nameserver（境外 DoH，respect-rules=1 下经代理出口），
+# 国内/私有/苹果域名走国内 DoH 直连，既消除 DNS 泄漏（权威侧不再看到国内 ISP 解析器），
+# 又保留国内 CDN 就近解析。
+# 顺序有意义：命中即停，越靠前优先级越高。
+
+# Google Play 下载/更新域名：必须排在 geosite:cn 之前，否则会被国内 DoH 解析成国内节点 IP
+# 并经 china_ip_route 绕过代理导致下载失败/超时（26.11.24 实机排障）。
+"+.googleapis.cn,+.xn--ngstr-lra8j.com,+.gvt1.com,dl.google.com":
+  - https://dns.cloudflare.com/dns-query
+  - https://dns.google/dns-query
+
+# 国内 / 私有 / 苹果域名：走国内 DoH 直连（不经代理），保 CDN 就近与内网解析。
+"geosite:cn,private,apple":
+  - https://doh.pub/dns-query
+  - https://dns.alidns.com/dns-query
+
+# 订阅源/规则源/更新源：必须在**代理尚未启动**时就能解析。
+# provider 拉取走 proxy: DIRECT，若这些域名走 nameserver（境外 DoH，respect-rules 下
+# 经代理出口）解析，代理没起来就解析不了 → 订阅拉不到 → 代理起不来 → 死锁
+# （26.11.07 实机事故：sysupgrade -n 清空 proxy_provider 缓存后首启必现）。
+# 指向国内 DoH 直连，与 fake-ip-filter 的同类条目配套（那边负责返回真实 IP）。
+# 换机场时由构建期 Scripts/openclash_sub_domains.py 从 MihomoPro.yaml 的
+# proxy-providers 自动补齐；这里保留已知域名作离线兜底。
+"+.tohno-0.top,+.de5.net,+.aisaka-taiga.com,+.github.com,+.githubusercontent.com,+.githubassets.com,+.jsdelivr.net":
+  - https://doh.pub/dns-query
+  - https://dns.alidns.com/dns-query
+
+# DDNS 域名（本仓库用 DuckDNS + de5.net）：DDNS 脚本经 dnsmasq 的第二 DNS 服务器
+# （openclash_custom_domain_dns.list）拿真实 IP；这里再兜一层，避免任何路径把它
+# 解析到 fake-ip 或经代理出口解析而拿到错误地址。
+"reason195.duckdns.org,reason195.de5.net":
+  - https://doh.pub/dns-query
+  - https://dns.alidns.com/dns-query
